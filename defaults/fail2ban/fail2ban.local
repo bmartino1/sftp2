@@ -1,3 +1,23 @@
-[Definition]
+[DEFAULT]
+
+# Logging
 loglevel = INFO
-logtarget = /var/log/fail2ban.log
+# Log output location
+logtarget = /config/fail2ban/fail2ban.log  
+
+# Socket and PID
+syslogsocket = auto
+socket = /var/run/fail2ban/fail2ban.sock
+pidfile = /var/run/fail2ban/fail2ban.pid
+
+# Database
+#
+
+# Persistent database for bans
+dbfile = /config/fail2ban/fail2ban.sqlite3
+
+# Keep bans for 7 days
+dbpurgeage = 7d
+
+# Max matches per ticket in DB
+dbmaxmatches = 10
