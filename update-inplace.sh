@@ -13,5 +13,9 @@ case "${1:-suite}" in
               fail2ban whois || true
     log "After upgrade:"; dpkg -l | awk '/openssh-(server|client)|fail2ban|whois/{printf "%s %s %s\n",$1,$2,$3}'
     ;;
-  *) log "Unknown mode";;
+  *)
+    log "Unknown mode '$1' (expected 'suite')"
+    ;;
 esac
+
+exit 0
