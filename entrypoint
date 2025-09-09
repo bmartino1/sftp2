@@ -1,380 +1,97 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# --- Timezone Setup ---
-# Configure system timezone from Docker environment variable TZ
-if [ -n "$TZ" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
-    echo "[entrypoint] Setting timezone to $TZ"
-    ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
-    echo "$TZ" > /etc/timezone
-    echo "[entrypoint] Current system time: $(date)"
-else
-    echo "[entrypoint] Invalid or missing TZ: '$TZ'. Skipping timezone configuration."
+log(){ echo "[entrypoint] $*"; }
+
+# 1) Timezone
+if [[ -n "${TZ:-}" ]]; then
+  ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime || true
+  echo "$TZ" >/etc/timezone || true
 fi
 
-# --- Ensure Required Runtime Folders Exist ---
-mkdir -p /config/fail2ban /config/userkeys /config/sshd/keys
-#mkdir -p /config/fail2ban /config/userkeys /config/sshd/keys /config/debug
-
-# --- Restore Default Configs if Missing in /config from /stage---
-
-# If missing, restore users.conf from stage
-if [[ ! -e /config/sshd/users.conf ]]; then
-    echo "$(date) [warn] users.conf missing from /config... Restoring from /stage"
-    echo "default user "admin" password "password" please change in the user.conf file"
-    cp /stage/sshd/users.conf /config/sshd/users.conf
-else
-    echo "$(date) [info] Using existing /config/sshd/users.conf"
-fi
-
-# If missing, restore fail2ban.local from stage
-if [[ ! -e /config/fail2ban/fail2ban.local ]]; then
-    echo "$(date) [warn] fail2ban.local missing from /config... Restoring from /stage"
-    cp /stage/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
-else
-    echo "$(date) [info] Using existing /config/fail2ban/fail2ban.local"
-fi
-
-# If missing, restore jail.local from stage
-if [[ ! -e /config/fail2ban/jail.local ]]; then
-    echo "$(date) [warn] jail.local missing from /config... Restoring from /stage"
-    cp /stage/fail2ban/jail.local /config/fail2ban/jail.local
-else
-    echo "$(date) [info] Using existing /config/fail2ban/jail.local"
-fi
-
-# If missing, restore sshd_config from stage
-if [[ ! -e /config/sshd/sshd_config ]]; then
-    echo "$(date) [warn] sshd_config missing from /config... Restoring from /stage"
-    cp /stage/sshd/sshd_config /config/sshd/sshd_config
-else
-    echo "$(date) [info] Using existing /config/sshd/sshd_config"
-fi
-
-# --- Permissions ---
-# Fix /config more for ssh key files...
-echo "$(date) [info] Setting needed ownership and permissions on /config"
-chown -R root:root /config/fail2ban /config/sshd
-chmod -R 755 /config
-chmod 644 /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf
-chmod 600 /config/sshd/keys/*_key 2>/dev/null || true
-chmod 600 /config/userkeys*_key 2>/dev/null || true
-
-# --- Apply Active Configs from /config ---
-cp /config/sshd/sshd_config /etc/ssh/sshd_config
-cp /config/fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
-cp /config/fail2ban/jail.local /etc/fail2ban/jail.d/jail.local
-
-# Create ssh keys if missing...
-if [ ! -f "$userConfFinalPath" ]; then
-    # Generate unique ssh keys for this container, if needed
-    if [ ! -f /config/sshd/keys/ssh_host_ed25519_key ]; then
-        echo "Generating sshd key..."
-        ssh-keygen -t ed25519 -f /config/sshd/keys/ssh_host_ed25519_key -N ''
-    fi
-    if [ ! -f /config/sshd/keys/ssh_host_rsa_key ]; then
-        echo "Generating sshd rsa key..."
-        ssh-keygen -t rsa -b 4096 -f /config/sshd/keys/ssh_host_rsa_key -N ''
-    fi
-fi
-
-#
-#Main Docker Script Checks 
-#
-
-# --- Paths & Regex ---
-userConfPath="/config/sshd/users.conf"
-userConfPathLegacy="/etc/sftp-users.conf"
-userConfFinalPath="/var/run/sftp/users.conf"
-
-# Extended regular expression (ERE) for arguments
-# POSIX.1-2008
-reUser='[A-Za-z0-9._][A-Za-z0-9._-]{0,31}'
-rePass='[^:]{0,255}'
-reUid='[[:digit:]]*'
-reGid='[[:digit:]]*'
-reDir='[^:]*'
-reArgs="^($reUser)(:$rePass)(:e)?(:$reUid)?(:$reGid)?(:$reDir)?$"
-# Smallest indication of attempt to use argument
-reArgsMaybe="^[^:[:space:]]+:.*$"
-# comment or empty line
-reArgSkip='^([[:blank:]]*#.*|[[:blank:]]*)$'
-
-# --- Script Start ---
-function log() {
-    echo "[entrypoint] $@"
+# 2) Seed defaults if /config is empty or missing expected files
+seed_file() { # seed_file <default> <dest>
+  local src="$1" dst="$2"
+  if [[ -f "$dst" ]]; then
+    log "Found $dst (leaving as-is)"
+  elif [[ -f "$src" ]]; then
+    install -D -m 0644 "$src" "$dst"
+    log "Seeded $(basename "$dst") from defaults"
+  fi
 }
 
-function validateArg() {
-    name="$1"
-    val="$2"
-    re="$3"
+seed_file /defaults/sshd/sshd_config                   /etc/ssh/sshd_config
+seed_file /defaults/fail2ban/fail2ban.local            /etc/fail2ban/fail2ban.local
+for f in /defaults/fail2ban/jail.d/*; do
+  [[ -f "$f" ]] || continue
+  base="$(basename "$f")"
+  seed_file "$f" "/etc/fail2ban/jail.d/$base"
+done
 
-    if [[ "$val" =~ ^$re$ ]]; then
-        return 0
+# 3) If user provided custom F2B pieces under /config, layer them in
+copy_if_present() { # copy_if_present <src> <dst>
+  local src="$1" dst="$2"
+  if [[ -f "$src" ]]; then
+    install -D -m 0644 "$src" "$dst"
+    log "Installed $(basename "$dst") from /config"
+  fi
+}
+# Support either /config/fail2ban/* flat or subdirs
+copy_if_present /config/fail2ban/fail2ban.local        /etc/fail2ban/fail2ban.local || true
+for d in jail.d filter.d action.d; do
+  if [[ -d "/config/fail2ban/$d" ]]; then
+    cp -a "/config/fail2ban/$d/." "/etc/fail2ban/$d/" || true
+    log "Merged /config/fail2ban/$d into /etc/fail2ban/$d"
+  fi
+done
+
+# 4) Optional runtime update
+# AUTO_UPDATE=none|suite|custom
+case "${AUTO_UPDATE:-suite}" in
+  none)
+    log "AUTO_UPDATE=none — skipping updates"
+    ;;
+  suite)
+    log "AUTO_UPDATE=suite — constrained upgrades within Debian suite"
+    /usr/local/bin/update-inplace.sh suite || true
+    ;;
+  custom)
+    if [[ -x /config/updateapps.sh ]]; then
+      log "AUTO_UPDATE=custom — running /config/updateapps.sh"
+      /config/updateapps.sh || true
     else
-        log "ERROR: Invalid $name \"$val\", do not match required regex pattern: $re"
-        return 1
+      log "AUTO_UPDATE=custom but /config/updateapps.sh missing or not executable; falling back to suite"
+      /usr/local/bin/update-inplace.sh suite || true
     fi
-}
-
-function createUser() {
-    log "Parsing user data: \"$@\""
-
-    IFS=':' read -a args <<< $@
-
-    skipIndex=0
-    chpasswdOptions=""
-    useraddOptions="--no-user-group"
-
-    user="${args[0]}"; validateArg "username" "$user" "$reUser" || return 1
-    pass="${args[1]}"; validateArg "password" "$pass" "$rePass" || return 1
-
-    if [ "${args[2]}" == "e" ]; then
-        chpasswdOptions="-e"
-        skipIndex=1
-    fi
-
-    uid="${args[$[$skipIndex+2]]}"; validateArg "UID" "$uid" "$reUid" || return 1
-    gid="${args[$[$skipIndex+3]]}"; validateArg "GID" "$gid" "$reGid" || return 1
-    dir="${args[$[$skipIndex+4]]}"; validateArg "dirs" "$dir" "$reDir" || return 1
-
-    if getent passwd $user > /dev/null; then
-        log "WARNING: User \"$user\" already exists. Skipping."
-        return 0
-    fi
-
-    if [ -n "$uid" ]; then
-        useraddOptions="$useraddOptions --non-unique --uid $uid"
-    fi
-
-    if [ -n "$gid" ]; then
-        if ! getent group $gid > /dev/null; then
-            groupadd --gid $gid "group_$gid"
-        fi
-
-        useraddOptions="$useraddOptions --gid $gid"
-    fi
-
-    useradd $useraddOptions $user
-    mkdir -p /home/$user /home/$user/.ssh
-    chown root:root /home/$user
-    chmod 755 /home/$user
-
-    # Retrieving user id to use it in chown commands instead of the user name
-    # to avoid problems on alpine when the user name contains a '.'
-    uid="$(id -u $user)"
-
-    if [ -n "$pass" ]; then
-        echo "$user:$pass" | chpasswd $chpasswdOptions
-    else
-        usermod -p "*" $user # disabled password
-    fi
-
-    # copy user key, if it exists
-    key_file="/config/userkeys/$user.pub"
-    if [ -f  $key_file ]; then
-        chown $uid /home/$user/.ssh
-        chmod 700 /home/$user/.ssh
-
-        echo "Copying key for $user"
-        dest_key_file="/home/$user/.ssh/$user.pub"
-        if [ -f $dest_key_file ]; then
-            rm $dest_key_file
-        fi
-        cp $key_file $dest_key_file
-        chown $uid $dest_key_file
-        chmod 600 $dest_key_file
-
-        # echo key into authorized_keys and set perms
-        cat $key_file > /home/$user/.ssh/authorized_keys
-        chown $uid /home/$user/.ssh/authorized_keys
-        chmod 600 /home/$user/.ssh/authorized_keys
-    fi
-
-    # Make sure dirs exists
-    if [ -n "$dir" ]; then
-        IFS=',' read -a dirArgs <<< $dir
-        for dirPath in ${dirArgs[@]}; do
-            dirPath="/home/$user/$dirPath"
-            if [ ! -d "$dirPath" ]; then
-                log "Creating directory: $dirPath"
-                mkdir -p $dirPath
-                chown -R $uid:users $dirPath
-            else
-                log "Directory already exists: $dirPath"
-            fi
-        done
-    fi
-}
-
-# --- User Loading ---
-# Allow running other programs, e.g. bash
-if [[ -z "$1" || "$1" =~ $reArgsMaybe ]]; then
-    startSshd=true
-else
-    startSshd=false
-fi
-
-# Backward compatibility with legacy config path
-if [ ! -f "$userConfPath" -a -f "$userConfPathLegacy" ]; then
-    mkdir -p "$(dirname $userConfPath)"
-    ln -s "$userConfPathLegacy" "$userConfPath"
-fi
-
-# Create host keys only on first run check again...
-if [ ! -f "$userConfFinalPath" ]; then
-    # Generate unique ssh keys for this container, if needed
-    if [ ! -f /config/sshd/keys/ssh_host_ed25519_key ]; then
-        echo "Generating sshd key..."
-        ssh-keygen -t ed25519 -f /config/sshd/keys/ssh_host_ed25519_key -N ''
-    fi
-    if [ ! -f /config/sshd/keys/ssh_host_rsa_key ]; then
-        echo "Generating sshd rsa key..."
-        ssh-keygen -t rsa -b 4096 -f /config/sshd/keys/ssh_host_rsa_key -N ''
-    fi
-fi
-
-echo "Checking for new users..."
-mkdir -p "$(dirname $userConfFinalPath)"
-
-# Append mounted config to final config
-if [ -f "$userConfPath" ]; then
-    cat "$userConfPath" | grep -v -E "$reArgSkip" > "$userConfFinalPath"
-fi
-
-if $startSshd; then
-    # Append users from arguments to final config
-    for user in "$@"; do
-        echo "$user" >> "$userConfFinalPath"
-    done
-fi
-
-if [ -n "$SFTP_USERS" ]; then
-    # Append users from environment variable to final config
-    usersFromEnv=($SFTP_USERS) # as array
-    for user in "${usersFromEnv[@]}"; do
-        echo "$user" >> "$userConfFinalPath"
-    done
-fi
-
-# Check that we have users in config
-if [[ -f "$userConfFinalPath" && "$(cat "$userConfFinalPath" | wc -l)" > 0 ]]; then
-    # Import users from final conf file
-    while IFS= read -r user || [[ -n "$user" ]]; do
-        createUser "$user"
-    done < "$userConfFinalPath"
-elif $startSshd; then
-    log "FATAL: No users provided in /config/sshd/users.conf file see Github readme for help"
-    touch /config/sshd/users.conf
-    exit 3
-fi
-
-#Script more for bind mounts... to add a volume /data and call script to add to sftp for file access...
-#easer to make a /home/%username%/anypathname mount to host path in docker run / compose file
-# Source custom scripts, if any
-if [ -d /config/sshd/scripts ]; then
-    for f in /config/sshd/scripts/*; do
-        if [ -x "$f" ]; then
-            log "Running $f ..."
-            $f
-        else
-            log "Could not run $f, because it's missing execute permission (+x)."
-        fi
-    done
-    unset f
-fi
-
-# --- Cleanup Old Runtime Files ---
-if [[ -e /var/run/fail2ban/fail2ban.sock ]]; then
-    rm /var/run/fail2ban/fail2ban.sock
-fi
-
-if [[ -e /var/run/sshd.pid ]]; then
-    rm /var/run/sshd.pid
-fi
-
-if [[ -e /var/log/auth.log ]]; then
-    > /var/log/auth.log
-fi
-
-# --- Debug Fail2Ban if errors---
-# Sanity checks for required Fail2Ban configuration files
-#log "[debug] Checking Fail2Ban core configuration files..."
-
-#declare -A f2b_files=(
-#    [fail2ban.conf]="/etc/fail2ban/fail2ban.conf"
-#    [fail2ban.local]="/etc/fail2ban/fail2ban.local"
-#    [jail.conf]="/etc/fail2ban/jail.conf"
-#    [jail.local]="/etc/fail2ban/jail.d/jail.local"
-#    [sshd.conf (filter)]="/etc/fail2ban/filter.d/sshd.conf"
-#)
-#
-#for name in "${!f2b_files[@]}"; do
-#    if [[ ! -f "${f2b_files[$name]}" ]]; then
-#        log "[ERROR] Missing Fail2Ban file: $name (${f2b_files[$name]})"
-#    else
-#        log "[OK] Found: $name"
-#    fi
-#done
-
-#Fail2Ban Application Dry Run Debug
-#fail2ban-client -d >> /config/debug/fail2ban-debug.log 2>&1
-
-# --- Application Service Version and Updates ---
-#Versioning check from docker build
-echo "[info] Application versions at build step :"
-cat /stage/debug/versions.txt
-
-# --- Application Updates ---
-CONFIG_UPDATE_SCRIPT="/config/updateapps.sh"
-DEFAULT_UPDATE_SCRIPT="/stage/updateapps.sh"
-
-case "${AUTO_UPDATE,,}" in
-    true)
-        echo "[info] AUTO_UPDATE=true — Running default update script from /stage..."
-        if [ -f "$DEFAULT_UPDATE_SCRIPT" ]; then
-            chmod +x "$DEFAULT_UPDATE_SCRIPT"
-            "$DEFAULT_UPDATE_SCRIPT"
-        else
-            echo "[warn] Default update script not found at $DEFAULT_UPDATE_SCRIPT. Skipping."
-        fi
-        ;;
-    custom)
-        echo "[info] AUTO_UPDATE=custom — Running user-provided update script from /config..."
-        if [ -f "$CONFIG_UPDATE_SCRIPT" ]; then
-            chmod +x "$CONFIG_UPDATE_SCRIPT"
-            "$CONFIG_UPDATE_SCRIPT"
-        else
-            echo "[warn] Custom update script not found at $CONFIG_UPDATE_SCRIPT. Skipping."
-        fi
-        ;;
-    false | "")
-        echo "[info] AUTO_UPDATE=false — Skipping all update scripts."
-        ;;
-    *)
-        echo "[warn] AUTO_UPDATE set to unknown value: '${AUTO_UPDATE}'. Use 'true', 'false', or 'custom'. Skipping updates."
-        ;;
+    ;;
+  *)
+    log "AUTO_UPDATE=${AUTO_UPDATE} not recognized; skipping"
+    ;;
 esac
 
-
-# --- Start Services ---
-if $startSshd; then
-    echo "Executing syslog-ng"
-    service syslog-ng start
-    echo "Executing sshd"
-    service ssh start
-    if [ ! -e "/config/fail2ban/fail2ban.log" ]; then
-        touch "/config/fail2ban/fail2ban.log"
-    fi
-    if [ ! -e "/var/log/auth.log" ]; then
-        touch "/var/log/auth.log"
-    fi
-
-    echo "Executing fail2ban"
-    service fail2ban start
-    tail -F /config/fail2ban/fail2ban.log -F /var/log/auth.log
-else
-    echo "Executing $@"
-    exec "$@"
+# 5) Generate host keys if missing
+if ! ls /etc/ssh/ssh_host_*key >/dev/null 2>&1; then
+  log "Generating SSH host keys..."
+  ssh-keygen -A
 fi
+
+# 6) Ensure rsyslog + fail2ban + sshd
+log "Starting rsyslog..."
+service rsyslog start || (rsyslogd &)
+
+log "Starting fail2ban..."
+service fail2ban start || (fail2ban-server -xf start &)
+
+log "Starting sshd..."
+/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config &
+sshd_pid=$!
+
+# 7) Tail logs (auth + fail2ban)
+touch /var/log/auth.log /var/log/fail2ban.log
+log "Ready. Tailing logs..."
+tail -F /var/log/auth.log /var/log/fail2ban.log &
+tail_pid=$!
+
+# 8) Wait on sshd
+wait $sshd_pid
+exit $?
