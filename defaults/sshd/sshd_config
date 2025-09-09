@@ -1,1 +1,25 @@
+#WIP -Bare Min befreo sshd -Config edits
 
+Port 22
+Protocol 2
+AddressFamily any
+ListenAddress 0.0.0.0
+# Security-hardening
+PasswordAuthentication yes
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+LoginGraceTime 20
+MaxAuthTries 4
+Subsystem sftp /usr/lib/openssh/sftp-server
+# Log to AUTH
+SyslogFacility AUTH
+LogLevel VERBOSE
