@@ -1,1 +1,98 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log(){ echo "[entrypoint] $*"; }
+
+# 1) Timezone
+if [[ -n "${TZ:-}" ]]; then
+  ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime || true
+  echo "$TZ" >/etc/timezone || true
+fi
+
+# 2) Seed defaults if /config is empty or missing expected files
+seed_file() { # seed_file <default> <dest>
+  local src="$1" dst="$2"
+  if [[ -f "$dst" ]]; then
+    log "Found $dst (leaving as-is)"
+  elif [[ -f "$src" ]]; then
+    install -D -m 0644 "$src" "$dst"
+    log "Seeded $(basename "$dst") from defaults"
+  fi
+}
+
+seed_file /defaults/sshd/sshd_config                   /etc/ssh/sshd_config
+seed_file /defaults/fail2ban/fail2ban.local            /etc/fail2ban/fail2ban.local
+for f in /defaults/fail2ban/jail.d/*; do
+  [[ -f "$f" ]] || continue
+  base="$(basename "$f")"
+  seed_file "$f" "/etc/fail2ban/jail.d/$base"
+done
+
+# 3) If user provided custom F2B pieces under /config, layer them in
+copy_if_present() { # copy_if_present <src> <dst>
+  local src="$1" dst="$2"
+  if [[ -f "$src" ]]; then
+    install -D -m 0644 "$src" "$dst"
+    log "Installed $(basename "$dst") from /config"
+  fi
+}
+# Support either /config/fail2ban/* flat or subdirs
+copy_if_present /config/fail2ban/fail2ban.local        /etc/fail2ban/fail2ban.local || true
+for d in jail.d filter.d action.d; do
+  if [[ -d "/config/fail2ban/$d" ]]; then
+    cp -a "/config/fail2ban/$d/." "/etc/fail2ban/$d/" || true
+    log "Merged /config/fail2ban/$d into /etc/fail2ban/$d"
+  fi
+done
+
+# 4) Optional runtime update
+# AUTO_UPDATE=none|suite|custom
+case "${AUTO_UPDATE:-suite}" in
+  none)
+    log "AUTO_UPDATE=none — skipping updates"
+    ;;
+  suite)
+    log "AUTO_UPDATE=suite — constrained upgrades within Debian suite"
+    /usr/local/bin/update-inplace.sh suite || true
+    ;;
+  custom)
+    if [[ -x /config/updateapps.sh ]]; then
+      log "AUTO_UPDATE=custom — running /config/updateapps.sh"
+      /config/updateapps.sh || true
+    else
+      log "AUTO_UPDATE=custom but /config/updateapps.sh missing or not executable; falling back to suite"
+      /usr/local/bin/update-inplace.sh suite || true
+    fi
+    ;;
+  *)
+    log "AUTO_UPDATE=${AUTO_UPDATE} not recognized; skipping"
+    ;;
+esac
+
+# 5) Generate host keys if missing
+if ! ls /etc/ssh/ssh_host_*key >/dev/null 2>&1; then
+  log "Generating SSH host keys..."
+  ssh-keygen -A
+fi
+
+# 6) Ensure rsyslog + fail2ban + sshd
+log "Starting rsyslog..."
+service rsyslog start || (rsyslogd &)
+
+log "Starting fail2ban..."
+service fail2ban start || (fail2ban-server -xf start &)
+
+log "Starting sshd..."
+/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config &
+sshd_pid=$!
+
+# 7) Tail logs (auth + fail2ban)
+touch /var/log/auth.log /var/log/fail2ban.log
+log "Ready. Tailing logs..."
+tail -F /var/log/auth.log /var/log/fail2ban.log &
+tail_pid=$!
+
+# 8) Wait on sshd
+wait $sshd_pid
+exit $?
 
