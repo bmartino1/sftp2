@@ -1,1 +1,32 @@
+# docker-sftpv2/examples/docker-compose.yml
+services:
+  sftp:
+#    image: ghcr.io/<you>/docker-sftp:latest WIP... Docker Hub...
+    container_name: sftp-fail2ban
+    hostname: SFTP.home.arpa
+    environment:
+      - TZ=America/Chicago
+      - AUTO_UPDATE=suite        # none | suite | custom
+      - PUID=0
+      - PGID=0
+    networks:
+      br0:
+        ipv4_address: 192.168.1.254
+        mac_address: "8a:ad:35:ea:d3:00"
+    dns:
+      - 1.1.1.1
+      - 208.67.222.222
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      # App data: supply your custom fail2ban, sshd, users, etc.
+      - /mnt/vm-zfs/omv/data/sftp:/config
+      # User homes to share via SFTP:
+      - /mnt/vm-zfs/:/home/admin/sftp
+    restart: unless-stopped
+
+networks:
+  br0:
+    external: true
 
