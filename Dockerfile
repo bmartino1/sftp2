@@ -1,102 +1,59 @@
-FROM phusion/baseimage:noble-1.0.2
-#Ubuntu based docker image
+# docker-sftp/Dockerfile
+FROM debian:12-slim
 
-LABEL maintainer=bmartino
-LABEL description="Upgraded OpenSSH + Fail2Ban on top of Phusion BaseImage"
-# a Updated ubuntu docker image Forked from markusmcnugen/sftp forekd from atmoz for unRAID
+LABEL maintainer="you@example.com" \
+      org.opencontainers.image.title="sftp-fail2ban" \
+      org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian slim)" \
+      org.opencontainers.image.source="https://github.com/<you>/docker-sftp"
 
-# --- Stage full default config folders in container image for entrypoint script ---
-# These are backups of all default configs (used optionally at runtime)
-RUN mkdir -p /stage
-RUN mkdir -p /stage/debug/
-COPY fail2ban/ /stage/fail2ban/
-COPY sshd/ /stage/sshd/
-COPY syslog-ng/ /stage/syslog-ng/
-# Set open file permissions for stage
-RUN chmod 777 -R /stage/ && \
-    chown nobody:users -R /stage/
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/Chicago \
+    AUTO_UPDATE=suite   \
+    PUID=0 PGID=0
 
-# Ensure all runtime directories exist (for mounts, logs, and service compatibility)
-RUN mkdir -p /etc/default/sshd \
-             /etc/default/f2ban \
-             /etc/fail2ban \
-             /etc/fail2ban/filter.d \
-             /etc/ssh \
-             /etc/syslog-ng \
-             /var/log \
-             /var/run/sshd \
-             /var/run/fail2ban
-
-# Install updated packages and setup
-# - OpenSSH needs /var/run/sshd to run
-# - Remove generic host keys; entrypoint generates unique keys
+# Base OS + packages
+# - rsyslog gives us /var/log/auth.log out of the box on Debian
+# - whois for fail2ban 'logwhois' action
+# - iptables/nftables: choose one; Debian uses nftables under the hood; 'iptables' is still common in actions
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        openssh-server \
-        openssh-sftp-server \
-        fail2ban \
-        iptables \
-        syslog-ng \
-        net-tools \
-        curl \
-        tzdata \
-        iproute2 && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/run/sshd /var/run/fail2ban && \
-    rm -f /etc/ssh/ssh_host_*key*
+    apt-get install -y --no-install-recommends \
+      openssh-server openssh-client openssh-sftp-server \
+      fail2ban \
+      rsyslog \
+      iptables \
+      whois \
+      tzdata \
+      ca-certificates \
+      curl \
+      bash \
+      tini \
+      iproute2 \
+      procps \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-#Set TZ for date and time fix for Build date and logs.
-ENV TZ=America/Chicago
-RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo ${TZ} > /etc/timezone
+# Ensure runtime dirs
+RUN mkdir -p /var/run/sshd /var/run/fail2ban /config \
+           /etc/fail2ban/jail.d /etc/fail2ban/filter.d /etc/fail2ban/action.d \
+    && rm -f /etc/ssh/ssh_host_*key*
 
-# Copy entrypoint logic that runs the application in the docker
-COPY entrypoint /entrypoint
-RUN chmod +x /entrypoint
+# Copy defaults (used only if /config doesn't provide them)
+COPY defaults/sshd/sshd_config                  /defaults/sshd/sshd_config
+COPY defaults/fail2ban/fail2ban.local           /defaults/fail2ban/fail2ban.local
+COPY defaults/fail2ban/jail.d/                  /defaults/fail2ban/jail.d/
+# (Optional) rsyslog override if you want to tweak; Debian already logs auth.log
+# COPY defaults/rsyslog/50-default.conf         /etc/rsyslog.d/50-default.conf
 
-# --- Default config files preset to run withount /config volume ---
-COPY syslog-ng/syslog-ng.conf /etc/syslog-ng/syslog-ng.conf
-COPY sshd/sshd_config /etc/default/sshd/sshd_config
-#Fail2ban via .local files 
-COPY fail2ban/jail.local /etc/fail2ban/jail.d/jail.local
-COPY fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
+# Boot logic + updater
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY update-inplace.sh /usr/local/bin/update-inplace.sh
+RUN chmod +x /usr/local/bin/*.sh
 
-#fix permission of files coppied
-# Set proper ownership and permissions on config files
-RUN chown -R root:root /etc/fail2ban /etc/default/sshd /etc/syslog-ng && \
-    chmod 644 /etc/fail2ban/*.local /etc/fail2ban/jail.d/*.local && \
-    chmod 644 /etc/default/sshd/sshd_config && \
-    chmod 644 /etc/syslog-ng/syslog-ng.conf
-
-#Autoupdate Feature for latter
-COPY updateapps.sh /stage/updateapps.sh
-RUN chmod +x /stage/updateapps.sh
-
-#Debug Build
-#RUN cp -r /etc/fail2ban /stage/debug/
-
-#Host Debug Check commands...
-#Check Fail2ban Repo Configs after build host commands...
-# docker run -it --entrypoint /bin/bash %dockerbuilt name and tag%...
-#Check files and settings...
-# cd /stage/debug
-
-#Double check and install lattest verions
-RUN /stage/updateapps.sh
-
-# Versioning - recorded at image build time for reference at runtime
-RUN echo -n "Fail2Ban: " > /stage/debug/versions.txt && \
-    fail2ban-client -V | head -n1 | sed 's/[^0-9.]*\([0-9.]*\).*/\1/' >> /stage/debug/versions.txt && \
-    echo -n "OpenSSH client: " >> /stage/debug/versions.txt && \
-    ssh -V 2>&1 | grep -oP 'OpenSSH_\K[^ ]+' >> /stage/debug/versions.txt && \
-    echo -n "OpenSSH server: " >> /stage/debug/versions.txt && \
-    dpkg-query -W -f='${Version}\n' openssh-server >> /stage/debug/versions.txt
-
-# Persistent volume for external configuration
-VOLUME /config
-
-# Open port for SSH / SFTP
+# Expose SFTP/SSH
 EXPOSE 22
 
-# Docker runs script
-ENTRYPOINT ["/entrypoint"]
+# Healthcheck: sshd listening?
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD bash -lc 'ss -lnt | grep -q ":22 " || exit 1'
+
+# Start
+ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]
