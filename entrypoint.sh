@@ -30,8 +30,30 @@ if [[ -n "${TZ:-}" ]]; then
   echo "$TZ" >/etc/timezone || true
 fi
 
-# ----- guaranteed /config structure (before we touch it) -----
-mkdir -p /config/fail2ban /config/userkeys /config/sshd/keys
+# ----- guaranteed /config structure -----
+mkdir -p /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys
+
+# ----- default admin seeding (first-boot only) -----
+DEFAULT_ADMIN="${DEFAULT_ADMIN:-true}"
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASS="${ADMIN_PASS:-password}"
+
+if [[ ! -s /config/sshd/users.conf ]]; then
+  if [[ "${DEFAULT_ADMIN,,}" == "true" ]]; then
+    install -D -m 0644 /dev/stdin /config/sshd/users.conf <<EOF
+# username:password[:e][:uid][:gid][:dir1,dir2,...]
+# seeded on first boot — CHANGE THIS PASSWORD!
+${ADMIN_USER}:${ADMIN_PASS}
+EOF
+    log "Seeded /config/sshd/users.conf with default admin (CHANGE THE PASSWORD)"
+  else
+    install -D -m 0644 /dev/stdin /config/sshd/users.conf <<'EOF'
+# username:password[:e][:uid][:gid][:dir1,dir2,...]
+# file created on first boot; add your users here
+EOF
+    log "Created empty /config/sshd/users.conf (DEFAULT_ADMIN=false)"
+  fi
+fi
 
 # ----- seed defaults into /etc (only if missing) -----
 seed() { local src="$1" dst="$2"; [[ -f "$dst" ]] || { install -D -m 0644 "$src" "$dst"; log "Seeded $(basename "$dst")"; }; }
@@ -41,23 +63,6 @@ seed /defaults/fail2ban/fail2ban.local     /etc/fail2ban/fail2ban.local
 for f in /defaults/fail2ban/jail.d/*;   do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/jail.d/$(basename "$f")"; done
 for f in /defaults/fail2ban/filter.d/*; do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/filter.d/$(basename "$f")"; done
 for f in /defaults/fail2ban/action.d/*; do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/action.d/$(basename "$f")"; done
-
-# Optional: seed a default users.conf template into /config if missing
-if [[ ! -f /config/sshd/users.conf ]]; then
-  if [[ -f /defaults/sshd/users.conf ]]; then
-    install -D -m 0644 /defaults/sshd/users.conf /config/sshd/users.conf
-  else
-    install -D -m 0644 /dev/stdin /config/sshd/users.conf <<'EOF'
-# One user per line. Format:
-# username:password[:e][:uid][:gid][:dir1,dir2,...]
-# If ":e" is present, password is already encrypted (chpasswd -e).
-# Examples:
-# admin:password
-# alice:$y$j9T$...:e:1001:1001:profile,drop
-EOF
-  fi
-  log "Seeded /config/sshd/users.conf"
-fi
 
 # ----- merge user-provided fail2ban content from /config -----
 merge_dir(){ local s="$1" d="$2"; [[ -d "$s" ]] && { cp -a "$s/." "$d/"; log "Merged $(basename "$s")"; }; }
@@ -69,11 +74,12 @@ merge_dir /config/fail2ban/action.d  /etc/fail2ban/action.d
 # Ensure F2B log/DB files are present on persistent volume
 touch /config/fail2ban/{whois.log,fail2ban.log} || true
 
-# ----- perms: keep /config sane (keys 600; confs 644; dirs 755) -----
-chown -R root:root /config/fail2ban /config/sshd || true
-find /config -type d -exec chmod 0755 {} \; || true
-find /config -type f -name "*.conf" -o -name "*.local" -exec chmod 0644 {} \; || true
+# ----- perms for /config -----
+chown -R root:root /config/sshd /config/fail2ban || true
+chmod 0755 /config /config/sshd /config/fail2ban || true
+find /config -type f \( -name "*.conf" -o -name "*.local" \) -exec chmod 0644 {} \; || true
 find /config/sshd/keys -type f -name "*_key" -exec chmod 0600 {} \; 2>/dev/null || true
+chmod 0600 /etc/ssh/sshd_config || true
 
 # ----- print build-time versions (from image) -----
 if [[ -f /opt/debug/build-versions.txt ]]; then
@@ -104,7 +110,6 @@ esac
 print_versions "Application versions after update:"
 
 # ----- host keys under /config (so they persist) -----
-mkdir -p /config/sshd/keys
 # ed25519
 if [[ ! -f /config/sshd/keys/ssh_host_ed25519_key ]]; then
   ssh-keygen -t ed25519 -f /config/sshd/keys/ssh_host_ed25519_key -N ''
@@ -116,50 +121,62 @@ if [[ ! -f /config/sshd/keys/ssh_host_rsa_key ]]; then
   chmod 600 /config/sshd/keys/ssh_host_rsa_key
 fi
 
-# ----- user management (compatible with your old format) -----
+# ----- optional sshd toggles via env -----
+# PASSWORD_AUTH=yes|no (default: from config)
+if [[ -n "${PASSWORD_AUTH:-}" ]]; then
+  if grep -qE '^[# ]*PasswordAuthentication[[:space:]]+' /etc/ssh/sshd_config; then
+    sed -i "s/^[# ]*PasswordAuthentication[[:space:]].*/PasswordAuthentication ${PASSWORD_AUTH}/" /etc/ssh/sshd_config
+  else
+    printf "\nPasswordAuthentication %s\n" "${PASSWORD_AUTH}" >> /etc/ssh/sshd_config
+  fi
+fi
+
+# ALLOW_USERS="user1 user2 ..."
+if [[ -n "${ALLOW_USERS:-}" ]]; then
+  if grep -q '^AllowUsers' /etc/ssh/sshd_config; then
+    sed -i "s/^AllowUsers.*/AllowUsers ${ALLOW_USERS}/" /etc/ssh/sshd_config
+  else
+    printf "\nAllowUsers %s\n" "$ALLOW_USERS" >> /etc/ssh/sshd_config
+  fi
+fi
+
+# ----- user management (users.conf + env + args) -----
 userConfPath="/config/sshd/users.conf"
 userConfFinalPath="/var/run/sftp/users.conf"
 mkdir -p "$(dirname "$userConfFinalPath")"
 
-# Regex (POSIX ERE-ish)
 reUser='[A-Za-z0-9._][A-Za-z0-9._-]{0,31}'
 rePass='[^:]{0,255}'
 reUid='[[:digit:]]*'
 reGid='[[:digit:]]*'
 reDir='[^:]*'
 reArgs="^(${reUser})(:${rePass})(:e)?(:${reUid})?(:${reGid})?(:${reDir})?$"
-reArgsMaybe='^[^:[:space:]]+:.*$'  # smallest hint that an arg looks like user spec
+reArgsMaybe='^[^:[:space:]]+:.*$'
 reArgSkip='^([[:blank:]]*#.*|[[:blank:]]*)$'
 
-# Decide whether we're starting sshd or running custom CMD
 startSshd=true
 if [[ -n "${1:-}" && ! "$1" =~ $reArgsMaybe ]]; then
-  # first arg is NOT a "user spec" -> run custom command instead
   startSshd=false
 fi
 
-# Build final users list file
 > "$userConfFinalPath"
 if [[ -f "$userConfPath" ]]; then
   grep -Ev "$reArgSkip" "$userConfPath" >> "$userConfFinalPath" || true
 fi
 if $startSshd && [[ -n "${SFTP_USERS:-}" ]]; then
-  # env var (space-separated user specs)
   for spec in $SFTP_USERS; do echo "$spec" >> "$userConfFinalPath"; done
 fi
 if $startSshd && [[ -n "${*:-}" ]]; then
-  # CLI args (each arg a user spec)
   for spec in "$@"; do echo "$spec" >> "$userConfFinalPath"; done
 fi
 
 create_user() {
   local line="$*"
-  # username:password[:e][:uid][:gid][:dir1,dir2,...]
   IFS=':' read -r username password maybe_e uid gid dirs <<<"$line"
   [[ "$username:$password" =~ ^${reUser}:${rePass}$ ]] || { warn "Bad user spec: $line"; return 0; }
 
   local chpasswd_opt=
-  if [[ "${maybe_e:-}" == "e" ]]; then chpasswd_opt="-e"; fi
+  [[ "${maybe_e:-}" == "e" ]] && chpasswd_opt="-e"
 
   local useradd_opts=()
   [[ -n "${uid:-}" ]] && useradd_opts+=(--non-unique --uid "$uid")
@@ -174,19 +191,16 @@ create_user() {
     useradd "${useradd_opts[@]}" "$username"
   fi
 
-  # Home + .ssh
   mkdir -p "/home/$username" "/home/$username/.ssh"
   chown root:root "/home/$username"
   chmod 755 "/home/$username"
 
-  # password
   if [[ -n "${password:-}" ]]; then
     echo "$username:$password" | chpasswd $chpasswd_opt
   else
-    usermod -p "*" "$username" || true  # disabled password
+    usermod -p "*" "$username" || true
   fi
 
-  # keys from /config/userkeys/<user>.pub
   local key_file="/config/userkeys/${username}.pub"
   if [[ -f "$key_file" ]]; then
     chown "$(id -u "$username")" "/home/$username/.ssh"
@@ -197,7 +211,6 @@ create_user() {
     log "Installed SSH key for $username"
   fi
 
-  # extra dirs under /home/username
   if [[ -n "${dirs:-}" ]]; then
     IFS=',' read -r -a arr <<<"$dirs"
     local ugid="$(id -g "$username")"
@@ -210,7 +223,6 @@ create_user() {
   fi
 }
 
-# import users
 if $startSshd; then
   if [[ -s "$userConfFinalPath" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -222,33 +234,30 @@ if $startSshd; then
   fi
 fi
 
-# Run any custom hooks
+# Hooks
 if [[ -d /config/sshd/scripts ]]; then
   for f in /config/sshd/scripts/*; do
     [[ -x "$f" ]] && { log "Running $f"; "$f"; } || [[ -e "$f" ]] && warn "Not executable: $f"
   done
 fi
 
-# ----- cleanup stale runtime files -----
+# Cleanup stale runtime files
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
 : > /var/log/auth.log   || true
 touch /var/log/fail2ban.log || true
 
-# ----- start services (rsyslog -> fail2ban -> sshd) -----
+# Start services
 log "Starting rsyslog";  service rsyslog start || (rsyslogd &)
 log "Starting fail2ban"; service fail2ban start || (fail2ban-server -xf start &)
 
-# Ensure sshd uses our persistent keys (your sshd_config should already point there)
 log "Starting sshd"
 /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config &
 sshd_pid=$!
 
-# Logs
 touch /var/log/auth.log /var/log/fail2ban.log
 tail -F /var/log/auth.log /var/log/fail2ban.log &
 tail_pid=$!
 
-# If the user passed a custom command (non-user-arg), run it too
 if ! $startSshd; then
   log "Executing custom command: $*"
   exec "$@"
