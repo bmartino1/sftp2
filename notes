@@ -1,9 +1,7 @@
-as of 7/3/25
+as of 9/9/25
 
 Base docker image:
-phusion/baseimage:noble-1.0.2
-Ubuntu code name Noble
-https://hub.docker.com/r/phusion/baseimage/tags
+Debian-slim
 
 Version runnign in docker
 openssh: openssh 9.9p1
@@ -17,9 +15,10 @@ https://archive.ubuntu.com/ubuntu/pool/universe/f/fail2ban/
 syslong-ng: syslog-ng 4.3.1-2build5
 https://answers.launchpad.net/ubuntu/noble/+package/syslog-ng
 
-
 Current Image version as seen in docker log
 [INFO] Versions of currently running software:
 Fail2Ban: 1.1.0
 OpenSSH client: 9.9p1
 OpenSSH server: 1:9.9p1-3ubuntu3
+
+WIP - as openssh moved to version 10 while breaking gclibs.
