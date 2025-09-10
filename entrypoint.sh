@@ -40,7 +40,7 @@ fi
 
 # ===== required dirs =====
 mkdir -p \
-  /config/debug/ /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
+  /config/debug/ /config/log/ /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
   /config/fail2ban/{jail.d,filter.d,action.d} \
   /etc/ssh \
   /etc/fail2ban /etc/fail2ban/{jail.d,filter.d,action.d} \
@@ -241,17 +241,15 @@ done
 # ===== SSHD config persisted in /config =====
 backup_and_link /etc/ssh/sshd_config /config/sshd/sshd_config
 
-# ===== ensure logs =====
+# ===== log files: create if missing (do NOT truncate) =====
 mkdir -p /config/log
-# auth + f2b + whois (whois may be created by action; touching is fine)
-: > /config/log/auth.log       || true
-: > /config/log/fail2ban.log   || true
-: > /config/log/whois.log      || true
-# (Optionally keep legacy files for compatibility)
-# : > /var/log/auth.log       || true
-# : > /var/log/fail2ban.log   || true
-#Old working ... before moving to new log location... to clear docker logs at docker start...
-#touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log || true
+ensure_log() { local f="$1"; [[ -e "$f" ]] || install -D -m 0644 /dev/null "$f"; }
+ensure_log /config/log/auth.log
+ensure_log /config/log/fail2ban.log
+ensure_log /config/log/whois.log
+# (Legacy locations retained here as comments for future users)
+# Old clearing (removed): : > /var/log/auth.log ; : > /var/log/fail2ban.log
+# Old working before move: touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log
 
 # ===== perms =====
 chown -R root:root /config/sshd /config/fail2ban || true
@@ -375,7 +373,8 @@ create_user() {
 
   if [[ -n "${dirs:-}" ]]; then
     IFS=',' read -r -a arr <<<"$dirs"
-    local ugid="$(id -g "$username")"
+    local ugid
+    ugid="$(id -g "$username")"
     for sub in "${arr[@]}"; do
       [[ -z "$sub" ]] && continue
       mkdir -p "/home/$username/$sub"
@@ -403,17 +402,19 @@ if [[ -d /config/sshd/scripts ]]; then
   done
 fi
 
-# ===== cleanup & logs =====
+# ===== cleanup & legacy logs =====
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
-: > /var/log/auth.log       || true
-: > /var/log/fail2ban.log   || true
+# Do NOT truncate any logs here.
+# Legacy paths retained as comments (previous behavior):
+# : > /var/log/auth.log       || true
+# : > /var/log/fail2ban.log   || true
 
 # ===== optional preflight =====
 if command -v fail2ban-client >/dev/null 2>&1; then
   fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
 fi
 
-# If multiple Subsystem sftp lines exist, warn (OpenSSH allows only one)
+# Warn if multiple Subsystem sftp lines exist (OpenSSH allows only one)
 if [[ "$(grep -E '^[[:space:]]*Subsystem[[:space:]]+sftp' -c /etc/ssh/sshd_config || echo 0)" -gt 1 ]]; then
   warn "Multiple 'Subsystem sftp' lines in sshd_config — keep ONLY: 'Subsystem sftp internal-sftp -f AUTHPRIV -l INFO'"
 fi
@@ -432,7 +433,7 @@ if [[ "${MODE:-start}" == "seed" ]]; then
 fi
 
 # ===== start daemons =====
-# Before starting rsyslog, make sure the rsyslog rule targets /config/log/auth.log
+# Ensure rsyslog sends AUTH/AUTHPRIV to persisted auth log
 printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 
 if command -v rsyslogd >/dev/null 2>&1; then
@@ -458,12 +459,12 @@ case "${TAIL_LOGS:-true}" in
     ( tail -n+1 -q -F /config/log/auth.log /config/log/fail2ban.log /config/log/whois.log 2>/dev/null & )
     ;;
 esac
-#Old semi-working... Mirror key logs to Docker stdout (toggle with TAIL_LOGS=false)
-#case "${TAIL_LOGS:-true}" in
-#  1|true|yes|on|TRUE|YES|ON)
-#    ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
-#    ;;
-#esac
+# Old semi-working (kept for reference):
+# case "${TAIL_LOGS:-true}" in
+#   1|true|yes|on|TRUE|YES|ON)
+#     ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
+#     ;;
+# esac
 
 # ===== final: start sshd in foreground (NO -e; send logs to syslog/auth.log) =====
 mkdir -p /var/run/sshd
