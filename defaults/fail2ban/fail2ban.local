@@ -1,20 +1,18 @@
 [DEFAULT]
 allowipv6 = auto
 
-# Logging
-loglevel = INFO
-# Log output location
-logtarget = /config/fail2ban/fail2ban.log  
+# Logging #
+loglevel  = INFO
+logtarget = /config/log/fail2ban.log
 
-# Socket and PID
+# Socket and PID #
 syslogsocket = auto
 socket = /var/run/fail2ban/fail2ban.sock
 pidfile = /var/run/fail2ban/fail2ban.pid
 
-# Database
-#
+# Database Settings #
 
-# Persistent database for bans
+# Persistent database for bans and docker reboots
 dbfile = /config/fail2ban/fail2ban.sqlite3
 
 # Keep bans for 7 days
