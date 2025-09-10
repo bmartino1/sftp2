@@ -10,6 +10,7 @@ services:
       - DEFAULT_ADMIN=true         # seed admin:password on first boot
       - PUID=0
       - PGID=0
+      - F2B_CONFIG_MODE=symlink #Symlink(default), overley, noclober. replace
       #Its better to use the user.conf file in the /config folder...
       #- ADMIN_USER=admin           # optional
       #- ADMIN_PASS=password        # optional (CHANGE THIS!)
