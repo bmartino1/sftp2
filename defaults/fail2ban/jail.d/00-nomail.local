@@ -1,0 +1,4 @@
+[DEFAULT]
+# Map mail-containing macros to plain ban action (no email).
+action_mw  = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
+action_mwl = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
