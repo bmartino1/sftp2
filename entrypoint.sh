@@ -13,6 +13,7 @@ warn() { echo "[entrypoint][WARN] $*"; }
 info() { echo "[info] $*"; }
 
 umask 027
+shopt -s nullglob
 
 # ===== version helpers =====
 ver_fail2ban()  { command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client -V 2>/dev/null | head -n1 | sed 's/[^0-9.]*\([0-9.]*\).*/\1/' || echo "unknown"; }
@@ -41,6 +42,7 @@ fi
 mkdir -p \
   /config/debug/ /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
   /config/fail2ban/{jail.d,filter.d,action.d} \
+  /etc/ssh \
   /etc/fail2ban /etc/fail2ban/{jail.d,filter.d,action.d} \
   /var/run/sshd /var/run/fail2ban /var/log /opt/debug
 
@@ -68,55 +70,63 @@ fi
 
 # ===== default bare min fail2ban config check (first boot) =====
 # --- Restore Default Configs if Missing in /config from build /defaults...---
-
-#Let try a docker variable at first run to make a user and password...
-# If missing, restore users.conf from stage
-#if [[ ! -e /config/sshd/users.conf ]]; then
-#    echo "$(date) [warn] users.conf missing from /config... Restoring from /stage"
-#    echo "default user "admin" password "password" please change in the user.conf file"
-#    cp /defaults/sshd/users.conf /config/sshd/users.conf
-#else
-#    echo "$(date) [info] Using existing /config/sshd/users.conf"
-#fi
-#config varbale semi works better to make the file...
-
-# If missing, restore fail2ban.local from stage
 if [[ ! -e /config/fail2ban/fail2ban.local ]]; then
-    echo "$(date) [warn] fail2ban.local missing from /config... Restoring from /stage"
-    cp /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
+  echo "$(date) [warn] fail2ban.local missing from /config... Restoring from /defaults"
+  cp /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
 else
-    echo "$(date) [info] Using existing /config/fail2ban/fail2ban.local"
+  echo "$(date) [info] Using existing /config/fail2ban/fail2ban.local"
 fi
 
-# If missing, restore jail.local from stage
 if [[ ! -e /config/fail2ban/jail.local ]]; then
-    echo "$(date) [warn] jail.local missing from /config... Restoring from /stage"
-    cp /defaults/fail2ban/jail.local /config/fail2ban/jail.local
+  echo "$(date) [warn] jail.local missing from /config... Restoring from /defaults"
+  cp /defaults/fail2ban/jail.local /config/fail2ban/jail.local
 else
-    echo "$(date) [info] Using existing /config/fail2ban/jail.local"
+  echo "$(date) [info] Using existing /config/fail2ban/jail.local"
 fi
 
-# If missing, restore sshd_config from stage
 if [[ ! -e /config/sshd/sshd_config ]]; then
-    echo "$(date) [warn] sshd_config missing from /config... Restoring from /stage"
-    cp /defaults/sshd/sshd_config /config/sshd/sshd_config
+  echo "$(date) [warn] sshd_config missing from /config... Restoring from /defaults"
+  cp /defaults/sshd/sshd_config /config/sshd/sshd_config
 else
-    echo "$(date) [info] Using existing /config/sshd/sshd_config"
+  echo "$(date) [info] Using existing /config/sshd/sshd_config"
 fi
 
 # --- Permissions ---
-# Fix /config more for ssh key files...
 echo "$(date) [info] Setting needed ownership and permissions on /config"
 chown -R root:root /config/fail2ban /config/sshd
 chmod -R 755 /config
-chmod 644 /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf
+# tolerate missing globs
+for f in /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf; do
+  [[ -e "$f" ]] && chmod 644 "$f"
+done
 chmod 600 /config/sshd/keys/*_key 2>/dev/null || true
-chmod 600 /config/userkeys*_key 2>/dev/null || true
+chmod 600 /config/userkeys/*_key 2>/dev/null || true
 
-# --- Apply Bare Min Active Configs from /config ---
-cp /config/sshd/sshd_config /etc/ssh/sshd_config
-cp /config/fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
-cp /config/fail2ban/jail.local /etc/fail2ban/jail.d/jail.local
+# --- Apply Bare Min Active Configs from /config (idempotent/no-op if already same) ---
+smart_copy() {
+  # copy SRC to DST only if DST does not already resolve to the same file/content
+  local src="$1" dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  if [[ -e "$dst" ]]; then
+    # if both resolve to the same inode/realpath, skip
+    local rs="$(readlink -f "$src" || echo "$src")"
+    local rd="$(readlink -f "$dst" || echo "$dst")"
+    if [[ "$rs" == "$rd" ]]; then
+      info "Skip copy: $dst already points to $src"
+      return 0
+    fi
+    # if contents identical, skip
+    if cmp -s "$src" "$dst"; then
+      info "Skip copy: $dst already has same content"
+      return 0
+    fi
+  fi
+  install -D -m 0644 "$src" "$dst"
+}
+
+smart_copy /config/sshd/sshd_config            /etc/ssh/sshd_config
+smart_copy /config/fail2ban/fail2ban.local     /etc/fail2ban/fail2ban.local
+smart_copy /config/fail2ban/jail.local         /etc/fail2ban/jail.d/jail.local
 
 # ===== rsyslog: disable imklog noise in containers =====
 if [[ "${DISABLE_IMKLOG:-true}" == "true" ]]; then
@@ -136,7 +146,7 @@ copy_pkg_dir_noclobber() {
   elif [[ -d "$fallback" ]]; then src="$fallback"
   else warn "No packaged directory for $(basename "$dest")"; return 0; fi
   find "$src" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | \
-    xargs -0 -I{} bash -c 'dst="$0/$(basename "$1")"; [[ -f "$dst" ]] || install -D -m0644 "$1" "$dst"' "$dest" {}
+    xargs -0 -I{} bash -c 'd="$0/$(basename "$1")"; [[ -f "$d" ]] || install -D -m0644 "$1" "$d"' "$dest" {}
   log "Ensured $(basename "$dest") from $src"
 }
 
@@ -172,10 +182,10 @@ backup_and_link() {
 # ===== seed defaults to /config (first boot only; no clobber) =====
 [[ -f /config/sshd/sshd_config ]] || seed_default /defaults/sshd/sshd_config /config/sshd/sshd_config
 seed_default /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
-seed_default /defaults/fail2ban/jail.local /config/fail2ban/jail.local
-for f in /defaults/fail2ban/jail.d/*   ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/jail.d/$(basename "$f")"; done
-for f in /defaults/fail2ban/filter.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/filter.d/$(basename "$f")"; done
-for f in /defaults/fail2ban/action.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/action.d/$(basename "$f")"; done
+seed_default /defaults/fail2ban/jail.local     /config/fail2ban/jail.local
+for f in /defaults/fail2ban/jail.d/*;   do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/jail.d/$(basename "$f")";   done
+for f in /defaults/fail2ban/filter.d/*; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/filter.d/$(basename "$f")"; done
+for f in /defaults/fail2ban/action.d/*; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/action.d/$(basename "$f")"; done
 
 # ===== ensure PACKAGED base files land in /config (no overwrite) =====
 copy_pkg_dir_noclobber /usr/share/fail2ban/filter.d  /etc/fail2ban/filter.d  /config/fail2ban/filter.d
@@ -201,12 +211,11 @@ wire_fail2ban_config() {
   case "$1" in
     symlink)
       backup_and_link /etc/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
-      backup_and_link /etc/fail2ban/jail.local      /config/fail2ban/jail.local
+      backup_and_link /etc/fail2ban/jail.local     /config/fail2ban/jail.local
       backup_and_link /etc/fail2ban/jail.conf      /config/fail2ban/jail.conf
       backup_and_link /etc/fail2ban/jail.d         /config/fail2ban/jail.d
       backup_and_link /etc/fail2ban/filter.d       /config/fail2ban/filter.d
       backup_and_link /etc/fail2ban/action.d       /config/fail2ban/action.d
-      # paths*.conf are read from /etc — link them too
       for p in /config/fail2ban/paths*.conf; do
         [[ -f "$p" ]] && backup_and_link "/etc/fail2ban/$(basename "$p")" "$p"
       done
