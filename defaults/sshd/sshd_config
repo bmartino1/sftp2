@@ -60,9 +60,18 @@ ForceCommand internal-sftp
 ChrootDirectory %h
 
 # Logging
-SyslogFacility AUTH
-LogLevel INFO
-# Detailed logging for debugging and monitoring
+#SyslogFacility AUTH
+#LogLevel INFO
+
+# Detailed logging for debugging and log monitoring
+# Make sure sshd sends logs to syslog, and include useful events:
+SyslogFacility AUTHPRIV
+LogLevel VERBOSE
+#This shows connection info, key fingerprints, disconnects, etc.
+
+# Fail2ban SFTP server with logging data:
+# Use internal-sftp and log to AUTHPRIV at INFO level so it lands in /var/log/auth.log
+Subsystem sftp internal-sftp -f AUTHPRIV -l INFO
 
 #
 # Additional Security Options
