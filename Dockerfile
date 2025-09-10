@@ -5,6 +5,7 @@ LABEL maintainer="bmartino1" \
       org.opencontainers.image.title="expanded-sftp-fail2ban" \
       org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian slim)"
 
+ENV AUTO_UPDATE=none
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/Chicago \
     AUTO_UPDATE=suite \
@@ -95,6 +96,12 @@ RUN mkdir -p /opt/debug && \
 
 # Persist /config by default
 VOLUME ["/config"]
+
+#Build - Debug - First run check
+#RUN /usr/local/bin/update-inplace.sh
+#COPY entrypoint.sh /opt/debug/entrypoint.sh
+#RUN chmod +x /opt/debug/*.sh
+#RUN /opt/debug/entrypoint.sh
 
 # Tini as PID 1 + entrypoint
 ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]
