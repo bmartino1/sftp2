@@ -1,21 +1,21 @@
 [sshd-cipher-mismatch]
 enabled   = true
-port      = ssh
+port      = 22
 filter    = sshd-cipher-mismatch
 logpath   = /config/log/auth.log
 maxretry  = 1
 findtime  = 3600
 bantime   = 86400
 action    = %(banaction)s[name=%(__name__)s, port="22", protocol="tcp"]
-            logwhois[logpath=/config/log/whois.log]
+           logwhois[logpath=/config/log/whois.log]
 
 [sshd-banner-fail]
 enabled   = true
-port      = ssh
+port      = 22
 filter    = sshd-banner-fail
 logpath   = /config/log/auth.log
 maxretry  = 1
 findtime  = 3600
 bantime   = 86400
 action    = %(banaction)s[name=%(__name__)s, port="22", protocol="tcp"]
-            logwhois[logpath=/config/log/whois.log]
+           logwhois[logpath=/config/log/whois.log]
