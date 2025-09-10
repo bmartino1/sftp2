@@ -247,9 +247,6 @@ ensure_log() { local f="$1"; [[ -e "$f" ]] || install -D -m 0644 /dev/null "$f";
 ensure_log /config/log/auth.log
 ensure_log /config/log/fail2ban.log
 ensure_log /config/log/whois.log
-# (Legacy locations retained here as comments for future users)
-# Old clearing (removed): : > /var/log/auth.log ; : > /var/log/fail2ban.log
-# Old working before move: touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log
 
 # ===== perms =====
 chown -R root:root /config/sshd /config/fail2ban || true
@@ -404,19 +401,32 @@ fi
 
 # ===== cleanup & legacy logs =====
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
-# Do NOT truncate any logs here.
-# Legacy paths retained as comments (previous behavior):
-# : > /var/log/auth.log       || true
-# : > /var/log/fail2ban.log   || true
+# Do NOT truncate logs here.
 
 # ===== optional preflight =====
 if command -v fail2ban-client >/dev/null 2>&1; then
   fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
 fi
 
-# Warn if multiple Subsystem sftp lines exist (OpenSSH allows only one)
+# ===== normalize sshd logging lines =====
+# Keep only ONE Subsystem sftp line, enforce -f AUTHPRIV -l INFO
+sed -i -E '/^[[:space:]]*Subsystem[[:space:]]+sftp[[:space:]]/d' /etc/ssh/sshd_config
+printf '\nSubsystem sftp internal-sftp -f AUTHPRIV -l INFO\n' >> /etc/ssh/sshd_config
+# Enforce SyslogFacility AUTHPRIV and LogLevel VERBOSE
+if grep -qE '^[# ]*SyslogFacility[[:space:]]+' /etc/ssh/sshd_config; then
+  sed -i 's/^[# ]*SyslogFacility[[:space:]].*/SyslogFacility AUTHPRIV/' /etc/ssh/sshd_config
+else
+  printf 'SyslogFacility AUTHPRIV\n' >> /etc/ssh/sshd_config
+fi
+if grep -qE '^[# ]*LogLevel[[:space:]]+' /etc/ssh/sshd_config; then
+  sed -i 's/^[# ]*LogLevel[[:space:]].*/LogLevel VERBOSE/' /etc/ssh/sshd_config
+else
+  printf 'LogLevel VERBOSE\n' >> /etc/ssh/sshd_config
+fi
+
+# Warn if still multiple Subsystem lines (paranoia)
 if [[ "$(grep -E '^[[:space:]]*Subsystem[[:space:]]+sftp' -c /etc/ssh/sshd_config || echo 0)" -gt 1 ]]; then
-  warn "Multiple 'Subsystem sftp' lines in sshd_config — keep ONLY: 'Subsystem sftp internal-sftp -f AUTHPRIV -l INFO'"
+  warn "Multiple 'Subsystem sftp' lines remain — please check /config/sshd/sshd_config"
 fi
 
 # Validate sshd config before starting
@@ -433,7 +443,7 @@ if [[ "${MODE:-start}" == "seed" ]]; then
 fi
 
 # ===== start daemons =====
-# Ensure rsyslog sends AUTH/AUTHPRIV to persisted auth log
+# Ensure rsyslog routes AUTH/AUTHPRIV to persisted auth log
 printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 
 if command -v rsyslogd >/dev/null 2>&1; then
@@ -442,6 +452,15 @@ if command -v rsyslogd >/dev/null 2>&1; then
 else
   warn "rsyslogd not installed"
 fi
+
+# Make sure Debian's maily default can't sneak back in:
+# Provide a last-word override file that disables mail macros.
+mkdir -p /etc/fail2ban/jail.d
+cat >/etc/fail2ban/jail.d/zz-nomail.local <<'EOF'
+[DEFAULT]
+action_mw  = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
+action_mwl = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
+EOF
 
 if command -v fail2ban-client >/dev/null 2>&1; then
   log "Starting fail2ban via client…"
@@ -459,14 +478,8 @@ case "${TAIL_LOGS:-true}" in
     ( tail -n+1 -q -F /config/log/auth.log /config/log/fail2ban.log /config/log/whois.log 2>/dev/null & )
     ;;
 esac
-# Old semi-working (kept for reference):
-# case "${TAIL_LOGS:-true}" in
-#   1|true|yes|on|TRUE|YES|ON)
-#     ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
-#     ;;
-# esac
 
-# ===== final: start sshd in foreground (NO -e; send logs to syslog/auth.log) =====
+# ===== final: start sshd in foreground (NO -e; logs → syslog AUTHPRIV) =====
 mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd || true
 log "Starting sshd"
