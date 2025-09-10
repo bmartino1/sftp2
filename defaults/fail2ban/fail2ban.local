@@ -1,9 +1,10 @@
-[DEFAULT]
+[Definition]
+# IPv6 handling
 allowipv6 = auto
 
-# Logging #
-loglevel  = INFO
-logtarget = /config/log/fail2ban.log
+# Logging
+loglevel   = INFO
+logtarget  = /config/log/fail2ban.log
 
 # Socket and PID #
 syslogsocket = auto
