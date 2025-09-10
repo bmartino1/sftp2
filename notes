@@ -20,14 +20,4 @@ fail2ban is already the newest version (1.0.2-2).
 whois is already the newest version (5.5.17).
 
 WIP-
-ssh not runnign as it should
-
-docker console and run to start the missing sshd task for sftp
-
-nohup /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config >/var/log/sshd.foreground.log 2>&1 &
-sleep 1
-pgrep -a sshd
-ss -ltnp | grep ':22' || true
-
-WIP - fail2ban is working as it should though...
-need to readded teh disaply loggin to the docker logs... login is workign other wise...
+need to readd the log disaply and change log to the docker logs ciew... defautl and sytems are workign other wise...
