@@ -5,16 +5,15 @@ findtime  = 600
 maxretry  = 3
 
 [sshd]
-enabled  = true
-port     = ssh
-filter   = sshd
-logpath  = /var/log/auth.log
-backend  = auto
-findtime = 10m
-maxretry = 5
-bantime  = 1h
+enabled   = true
+port      = ssh
+filter    = sshd
+logpath   = /config/log/auth.log
+backend   = auto
+findtime  = 10m
+maxretry  = 5
+bantime   = 1h
 
-# Use the distro’s default ban action (iptables on systems that have it).
-# the docker entrypoint already drops 99-banaction.local to pick nftables if iptables is missing.
+# Use distro default action, plus whois into /config/log
 action = %(action_mw)s
-         logwhois[logpath=/config/fail2ban/whois.log]
+         logwhois[logpath=/config/log/whois.log]
