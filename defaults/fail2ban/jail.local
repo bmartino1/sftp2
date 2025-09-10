@@ -1,0 +1,33 @@
+[DEFAULT]
+# List of IPs or networks to ignore (internal Docker/unRAID ranges)
+ignoreip = 127.0.0.1/8
+#172.16.0.0/12 192.168.0.0/16 internal docker bridge and private router lan traffic...
+
+# Ban timing...
+# 24 hours
+bantime  = 86400
+
+# 10 minutes window
+findtime = 600
+
+# Max 3 failures before ban
+maxretry = 3
+
+# Log settings
+backend = polling
+usedns = warn
+logencoding = auto
+
+# Database
+dbfile = /config/fail2ban/fail2ban.sqlite3
+dbpurgeage = 7d
+
+# Default ban action (iptables-multiport is fine in Docker)
+banaction = iptables-multiport
+action = %(banaction)s[name=%(__name__)s, port="22", protocol="tcp"]
+
+[sshd]
+enabled = true
+port = 22
+filter = sshd
+logpath = /var/log/auth.log
