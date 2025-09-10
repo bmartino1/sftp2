@@ -19,6 +19,15 @@ openssh-sftp-server is already the newest version (1:9.2p1-2+deb12u7).
 fail2ban is already the newest version (1.0.2-2).
 whois is already the newest version (5.5.17).
 
-WIP - testing for compability...
-ssh not runnign in docker atm entry poing needs small updates may be due to backgorup for groud to keep docker running...
+WIP-
+ssh not runnign as it should
+
+docker console and run to start the missing sshd task for sftp
+
+nohup /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config >/var/log/sshd.foreground.log 2>&1 &
+sleep 1
+pgrep -a sshd
+ss -ltnp | grep ':22' || true
+
 WIP - fail2ban is working as it should though...
+need to readded teh disaply loggin to the docker logs... login is workign other wise...
