@@ -40,7 +40,7 @@ you can add the updateapps.sh script in the /conf and this should install the la
 docker run \
     --cap-add=NET_ADMIN --cap-add=NET_RAW
     -v /host/config/path:/config \
-    -p 22:22 -d bmmbmm01/sftp:latest \
+    -p 22:22 -d bmmbmm01/sftp2:latest \
     user:pass:::upload
 ```
 User "user" with password "pass" can login with sftp and upload files to a folder called "upload". No mounted directories or custom UID/GID. Later you can inspect the files and use `--volumes-from` to mount them somewhere else.
@@ -94,7 +94,7 @@ docker run \
     --cap-add=NET_ADMIN --cap-add=NET_RAW
     -v /host/config/path:/config \
     -v /host/upload:/home/user/upload \
-    -p 22:22 -d bmmbmm01/sftp:latest \
+    -p 22:22 -d bmmbmm01/sftp2:latest \
     user:pass:1001
 ```
 
@@ -191,7 +191,7 @@ $ docker build -t sftp .
 $ docker run \
     --cap-add=NET_ADMIN --cap-add=NET_RAW
     -v /host/config/path:/config \
-    -p 22:22 -d bmmbmm01/sftp:latest \
+    -p 22:22 -d bmmbmm01/sftp2:latest \
     user:pass:::upload
 ```
 
@@ -200,7 +200,7 @@ This will start a container as described in the "Run container from Docker regis
 ## Using Docker Compose:
 ```
 sftp:
-    image: bmmbmm01/sftp:latest
+    image: bmmbmm01/sftp2:latest
     cap_add:
         - NET_ADMIN
         - NET_RAW
