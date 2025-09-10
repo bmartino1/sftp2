@@ -1,43 +1,53 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# ===== tracing (enable with -e TRACE=1) =====
+if [[ "${TRACE:-0}" == "1" ]]; then
+  export PS4='+ [${BASH_SOURCE##*/}:${LINENO}] ${FUNCNAME[0]:-main}: '
+  set -x
+fi
+trap 'rc=$?; echo "[entrypoint][ERR] exit $rc at line $LINENO running: ${BASH_COMMAND}"; exit $rc' ERR
+
 log()  { echo "[entrypoint] $*"; }
 warn() { echo "[entrypoint][WARN] $*"; }
 info() { echo "[info] $*"; }
 
 umask 027
 
-# ----- version helpers -----
-ver_fail2ban()  { fail2ban-client -V 2>/dev/null | head -n1 | sed 's/[^0-9.]*\([0-9.]*\).*/\1/'; }
-ver_ssh_client(){ ssh -V 2>&1 | sed -n 's/.*OpenSSH_\([^ ]*\).*/\1/p'; }
+# ===== version helpers =====
+ver_fail2ban()  { command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client -V 2>/dev/null | head -n1 | sed 's/[^0-9.]*\([0-9.]*\).*/\1/' || echo "unknown"; }
+ver_ssh_client(){ command -v ssh >/dev/null 2>&1 && ssh -V 2>&1 | sed -n 's/.*OpenSSH_\([^ ]*\).*/\1/p' || echo "unknown"; }
 ver_ssh_server(){ dpkg-query -W -f='${Version}\n' openssh-server 2>/dev/null || echo "unknown"; }
 ver_whois()     { dpkg-query -W -f='${Version}\n' whois 2>/dev/null || echo "unknown"; }
-ver_glibc()     { ldd --version 2>/dev/null | head -n1 | awk '{print $NF}'; }
+ver_glibc()     { ldd --version 2>/dev/null | head -n1 | awk '{print $NF}' || echo "unknown"; }
 
 print_versions() {
   local when="$1"
   info "${when}"
-  info "  Fail2Ban: $(ver_fail2ban || echo unknown)"
-  info "  OpenSSH client: $(ver_ssh_client || echo unknown)"
+  info "  Fail2Ban:       $(ver_fail2ban)"
+  info "  OpenSSH client: $(ver_ssh_client)"
   info "  OpenSSH server: $(ver_ssh_server)"
-  info "  whois: $(ver_whois)"
-  info "  glibc: $(ver_glibc || echo unknown)"
+  info "  whois:          $(ver_whois)"
+  info "  glibc:          $(ver_glibc)"
 }
 
-# ----- timezone -----
-if [[ -n "${TZ:-}" ]]; then
+# ===== timezone =====
+if [[ -n "${TZ:-}" && -e "/usr/share/zoneinfo/${TZ}" ]]; then
   ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime || true
   echo "$TZ" >/etc/timezone || true
 fi
 
-# ----- guaranteed /config structure -----
-mkdir -p /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys
+# ===== required dirs =====
+mkdir -p \
+  /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
+  /config/fail2ban/{jail.d,filter.d,action.d} \
+  /etc/fail2ban /etc/fail2ban/{jail.d,filter.d,action.d} \
+  /var/run/sshd /var/run/fail2ban /var/log /opt/debug
 
-# ----- default admin seeding (first-boot only) -----
+# ===== default admin (first boot) =====
 DEFAULT_ADMIN="${DEFAULT_ADMIN:-true}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-password}"
-
 if [[ ! -s /config/sshd/users.conf ]]; then
   if [[ "${DEFAULT_ADMIN,,}" == "true" ]]; then
     install -D -m 0644 /dev/stdin /config/sshd/users.conf <<EOF
@@ -55,74 +65,175 @@ EOF
   fi
 fi
 
-# ----- seed defaults into /etc (only if missing) -----
-seed() { local src="$1" dst="$2"; [[ -f "$dst" ]] || { install -D -m 0644 "$src" "$dst"; log "Seeded $(basename "$dst")"; }; }
+# ===== rsyslog: disable imklog noise =====
+if [[ "${DISABLE_IMKLOG:-true}" == "true" ]]; then
+  if grep -q 'module(load="imklog"' /etc/rsyslog.conf 2>/dev/null; then
+    sed -i -E 's/^\s*module\(load="imklog".*\)/# disabled in container: &/' /etc/rsyslog.conf || true
+    log "Disabled rsyslog imklog module (no /proc/kmsg in containers)"
+  fi
+fi
 
-seed /defaults/sshd/sshd_config            /etc/ssh/sshd_config
-seed /defaults/fail2ban/fail2ban.local     /etc/fail2ban/fail2ban.local
-for f in /defaults/fail2ban/jail.d/*;   do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/jail.d/$(basename "$f")"; done
-for f in /defaults/fail2ban/filter.d/*; do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/filter.d/$(basename "$f")"; done
-for f in /defaults/fail2ban/action.d/*; do [[ -f "$f" ]] && seed "$f" "/etc/fail2ban/action.d/$(basename "$f")"; done
+# ===== seed /defaults into /config (first boot only) =====
+seed_default() { local src="$1" dst="$2"; [[ -f "$dst" ]] || install -D -m0644 "$src" "$dst"; }
+[[ -f /config/sshd/sshd_config ]] || seed_default /defaults/sshd/sshd_config /config/sshd/sshd_config
+seed_default /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
+for f in /defaults/fail2ban/jail.d/*   ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/jail.d/$(basename "$f")"; done
+for f in /defaults/fail2ban/filter.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/filter.d/$(basename "$f")"; done
+for f in /defaults/fail2ban/action.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/action.d/$(basename "$f")"; done
 
-# ----- merge user-provided fail2ban content from /config -----
-merge_dir(){ local s="$1" d="$2"; [[ -d "$s" ]] && { cp -a "$s/." "$d/"; log "Merged $(basename "$s")"; }; }
-merge_dir /config/fail2ban/jail.d    /etc/fail2ban/jail.d
-merge_dir /config/fail2ban/filter.d  /etc/fail2ban/filter.d
-merge_dir /config/fail2ban/action.d  /etc/fail2ban/action.d
-[[ -f /config/fail2ban/fail2ban.local ]] && install -m0644 /config/fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local && log "Applied fail2ban.local from /config"
+# ===== ensure core packaged Fail2Ban files are in /config =====
+# We guarantee these TWO exist so jails work even in symlink mode.
+copy_if_missing() {
+  local name="$1"
+  local dest="$2"
+  shift 2
+  [[ -f "$dest" ]] && return 0
+  for src in "$@"; do
+    if [[ -f "$src" ]]; then
+      install -D -m0644 "$src" "$dest"
+      log "Ensured $(basename "$dest") from $src"
+      return 0
+    fi
+  done
+  return 1
+}
 
-# Ensure F2B log/DB files are present on persistent volume
-touch /config/fail2ban/{whois.log,fail2ban.log} || true
+# Try /usr/share first (Debian), then /etc (in case Debian ships there)
+copy_if_missing "sshd.conf" /config/fail2ban/filter.d/sshd.conf \
+  /usr/share/fail2ban/filter.d/sshd.conf \
+  /etc/fail2ban/filter.d/sshd.conf || warn "Could not seed sshd.conf (check your package)"
 
-# ----- perms for /config -----
+# We'll decide banaction below, but ensure both action files exist if available
+copy_if_missing "iptables-multiport.conf" /config/fail2ban/action.d/iptables-multiport.conf \
+  /usr/share/fail2ban/action.d/iptables-multiport.conf \
+  /etc/fail2ban/action.d/iptables-multiport.conf || true
+
+copy_if_missing "nftables-multiport.conf" /config/fail2ban/action.d/nftables-multiport.conf \
+  /usr/share/fail2ban/action.d/nftables-multiport.conf \
+  /etc/fail2ban/action.d/nftables-multiport.conf || true
+
+# ===== auto-select banaction if not explicitly set =====
+if [[ ! -f /config/fail2ban/jail.d/99-banaction.local ]]; then
+  if command -v iptables >/dev/null 2>&1; then
+    cat >/config/fail2ban/jail.d/99-banaction.local <<'EOF'
+[DEFAULT]
+banaction = iptables-multiport
+EOF
+    log "Selected iptables-multiport (iptables present)"
+  elif command -v nft >/dev/null 2>&1; then
+    cat >/config/fail2ban/jail.d/99-banaction.local <<'EOF'
+[DEFAULT]
+banaction = nftables-multiport
+EOF
+    log "Selected nftables-multiport (iptables not found)"
+  else
+    warn "Neither iptables nor nft detected; leaving banaction untouched"
+  fi
+fi
+
+# ===== backup-once-and-link (no growth on restarts) =====
+backup_and_link() {
+  local target="$1" src="$2"
+  if [[ -L "$target" ]]; then ln -sfn "$src" "$target"; return 0; fi
+  if [[ -e "$target" ]]; then
+    if [[ ! -e "${target}.bak.original" ]]; then
+      mv "$target" "${target}.bak.original"; log "Backed up $target -> ${target}.bak.original"
+    else
+      rm -rf "${target}.bak" 2>/dev/null || true
+      mv "$target" "${target}.bak"; log "Rotated $target -> ${target}.bak"
+    fi
+  fi
+  ln -sfn "$src" "$target"
+}
+
+# ===== Fail2Ban config wiring =====
+F2B_CONFIG_MODE="${F2B_CONFIG_MODE:-symlink}"
+F2B_CONFIG_MODE="${F2B_CONFIG_MODE,,}"
+
+wire_fail2ban_config() {
+  case "$1" in
+    symlink)
+      backup_and_link /etc/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
+      backup_and_link /etc/fail2ban/jail.d        /config/fail2ban/jail.d
+      backup_and_link /etc/fail2ban/filter.d      /config/fail2ban/filter.d
+      backup_and_link /etc/fail2ban/action.d      /config/fail2ban/action.d
+      log "Fail2Ban config mode=symlink (source of truth: /config/fail2ban)"
+      ;;
+    overlay)
+      cp -a  /defaults/fail2ban/. /etc/fail2ban/
+      cp -a  /config/fail2ban/.   /etc/fail2ban/
+      log "Fail2Ban config mode=overlay (user files override defaults in /etc)"
+      ;;
+    noclobber)
+      cp -a  /defaults/fail2ban/. /etc/fail2ban/
+      cp -an /config/fail2ban/.   /etc/fail2ban/ || true
+      log "Fail2Ban config mode=noclobber (defaults kept; override via 99-*.conf)"
+      ;;
+    replace)
+      cp -a  /config/fail2ban/.   /etc/fail2ban/
+      log "Fail2Ban config mode=replace (/etc uses only /config)"
+      ;;
+    *) warn "Unknown F2B_CONFIG_MODE='$1', falling back to symlink"; wire_fail2ban_config "symlink";;
+  esac
+}
+wire_fail2ban_config "$F2B_CONFIG_MODE"
+
+# sanity: core files visible in /etc
+for must in /etc/fail2ban/filter.d/sshd.conf /etc/fail2ban/action.d/iptables-multiport.conf /etc/fail2ban/action.d/nftables-multiport.conf; do
+  [[ -f "$must" ]] || true
+done
+
+# ===== SSHD config persisted in /config =====
+backup_and_link /etc/ssh/sshd_config /config/sshd/sshd_config
+
+# ===== ensure logs =====
+touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log || true
+
+# ===== perms =====
 chown -R root:root /config/sshd /config/fail2ban || true
 chmod 0755 /config /config/sshd /config/fail2ban || true
 find /config -type f \( -name "*.conf" -o -name "*.local" \) -exec chmod 0644 {} \; || true
 find /config/sshd/keys -type f -name "*_key" -exec chmod 0600 {} \; 2>/dev/null || true
 chmod 0600 /etc/ssh/sshd_config || true
 
-# ----- print build-time versions (from image) -----
-if [[ -f /opt/debug/build-versions.txt ]]; then
-  info "Application versions at build step:"
-  sed 's/^/[info]   /' /opt/debug/build-versions.txt
-fi
-
-# ----- print runtime versions BEFORE update -----
+# ===== version banners =====
+[[ -f /opt/debug/build-versions.txt ]] && { info "Application versions at build step:"; sed 's/^/[info]   /' /opt/debug/build-versions.txt; }
 print_versions "Application versions at container start:"
 
-# ----- optional updates (suite-safe by default) -----
-case "${AUTO_UPDATE:-suite}" in
-  none)  log "AUTO_UPDATE=none";;
-  suite) log "AUTO_UPDATE=suite"; /usr/local/bin/update-inplace.sh suite || true;;
-  custom)
-    if [[ -x /config/updateapps.sh ]]; then
-      log "AUTO_UPDATE=custom"
-      /config/updateapps.sh || true
+# ===== updates (default NONE) =====
+mode="${AUTO_UPDATE:-none}"; mode="${mode,,}"
+case "$mode" in
+  none|false|0|off|'') log "AUTO_UPDATE=none (updates disabled)";;
+  suite|true|1|on)
+    log "AUTO_UPDATE=suite"
+    if [[ -x /usr/local/bin/update-inplace.sh ]]; then
+      /usr/local/bin/update-inplace.sh suite || warn "update-inplace suite failed (continuing)"
     else
-      log "AUTO_UPDATE=custom but /config/updateapps.sh missing; falling back to suite"
-      /usr/local/bin/update-inplace.sh suite || true
+      warn "update-inplace.sh missing; skipping updates"
     fi
     ;;
-  *) log "AUTO_UPDATE=${AUTO_UPDATE} not recognized";;
+  custom)
+    if [[ -x /config/updateapps.sh ]]; then
+      log "AUTO_UPDATE=custom: running /config/updateapps.sh"
+      /config/updateapps.sh || warn "custom update failed (continuing)"
+    else
+      warn "AUTO_UPDATE=custom set but /config/updateapps.sh missing; skipping"
+    fi
+    ;;
+  *) warn "AUTO_UPDATE='$mode' not recognized; skipping";;
 esac
 
-# ----- print runtime versions AFTER update -----
 print_versions "Application versions after update:"
 
-# ----- host keys under /config (so they persist) -----
-# ed25519
-if [[ ! -f /config/sshd/keys/ssh_host_ed25519_key ]]; then
-  ssh-keygen -t ed25519 -f /config/sshd/keys/ssh_host_ed25519_key -N ''
-  chmod 600 /config/sshd/keys/ssh_host_ed25519_key
-fi
-# rsa
-if [[ ! -f /config/sshd/keys/ssh_host_rsa_key ]]; then
-  ssh-keygen -t rsa -b 4096 -f /config/sshd/keys/ssh_host_rsa_key -N ''
-  chmod 600 /config/sshd/keys/ssh_host_rsa_key
-fi
+# ===== SSH host keys (persist) + link to /etc/ssh =====
+[[ -f /config/sshd/keys/ssh_host_ed25519_key ]] || { ssh-keygen -t ed25519 -f /config/sshd/keys/ssh_host_ed25519_key -N ''; }
+[[ -f /config/sshd/keys/ssh_host_rsa_key     ]] || { ssh-keygen -t rsa -b 4096 -f /config/sshd/keys/ssh_host_rsa_key -N ''; }
+chmod 600 /config/sshd/keys/ssh_host_*_key
+ln -sfn /config/sshd/keys/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
+ln -sfn /config/sshd/keys/ssh_host_rsa_key     /etc/ssh/ssh_host_rsa_key
+chmod 600 /etc/ssh/ssh_host_*_key
 
-# ----- optional sshd toggles via env -----
-# PASSWORD_AUTH=yes|no (default: from config)
+# ===== optional sshd toggles =====
 if [[ -n "${PASSWORD_AUTH:-}" ]]; then
   if grep -qE '^[# ]*PasswordAuthentication[[:space:]]+' /etc/ssh/sshd_config; then
     sed -i "s/^[# ]*PasswordAuthentication[[:space:]].*/PasswordAuthentication ${PASSWORD_AUTH}/" /etc/ssh/sshd_config
@@ -130,17 +241,9 @@ if [[ -n "${PASSWORD_AUTH:-}" ]]; then
     printf "\nPasswordAuthentication %s\n" "${PASSWORD_AUTH}" >> /etc/ssh/sshd_config
   fi
 fi
+[[ -n "${ALLOW_USERS:-}" ]] && { grep -q '^AllowUsers' /etc/ssh/sshd_config && sed -i "s/^AllowUsers.*/AllowUsers ${ALLOW_USERS}/" /etc/ssh/sshd_config || printf "\nAllowUsers %s\n" "$ALLOW_USERS" >> /etc/ssh/sshd_config; }
 
-# ALLOW_USERS="user1 user2 ..."
-if [[ -n "${ALLOW_USERS:-}" ]]; then
-  if grep -q '^AllowUsers' /etc/ssh/sshd_config; then
-    sed -i "s/^AllowUsers.*/AllowUsers ${ALLOW_USERS}/" /etc/ssh/sshd_config
-  else
-    printf "\nAllowUsers %s\n" "$ALLOW_USERS" >> /etc/ssh/sshd_config
-  fi
-fi
-
-# ----- user management (users.conf + env + args) -----
+# ===== users from config/env/args =====
 userConfPath="/config/sshd/users.conf"
 userConfFinalPath="/var/run/sftp/users.conf"
 mkdir -p "$(dirname "$userConfFinalPath")"
@@ -150,7 +253,6 @@ rePass='[^:]{0,255}'
 reUid='[[:digit:]]*'
 reGid='[[:digit:]]*'
 reDir='[^:]*'
-reArgs="^(${reUser})(:${rePass})(:e)?(:${reUid})?(:${reGid})?(:${reDir})?$"
 reArgsMaybe='^[^:[:space:]]+:.*$'
 reArgSkip='^([[:blank:]]*#.*|[[:blank:]]*)$'
 
@@ -159,21 +261,17 @@ if [[ -n "${1:-}" && ! "$1" =~ $reArgsMaybe ]]; then
   startSshd=false
 fi
 
-> "$userConfFinalPath"
-if [[ -f "$userConfPath" ]]; then
-  grep -Ev "$reArgSkip" "$userConfPath" >> "$userConfFinalPath" || true
-fi
-if $startSshd && [[ -n "${SFTP_USERS:-}" ]]; then
-  for spec in $SFTP_USERS; do echo "$spec" >> "$userConfFinalPath"; done
-fi
-if $startSshd && [[ -n "${*:-}" ]]; then
-  for spec in "$@"; do echo "$spec" >> "$userConfFinalPath"; done
+: > "$userConfFinalPath"
+[[ -f "$userConfPath" ]] && grep -Ev "$reArgSkip" "$userConfPath" >> "$userConfFinalPath" || true
+if $startSshd; then
+  [[ -n "${SFTP_USERS:-}" ]] && for spec in $SFTP_USERS; do echo "$spec" >> "$userConfFinalPath"; done
+  [[ -n "${*:-}"         ]] && for spec in "$@";       do echo "$spec" >> "$userConfFinalPath"; done
 fi
 
 create_user() {
   local line="$*"
   IFS=':' read -r username password maybe_e uid gid dirs <<<"$line"
-  [[ "$username:$password" =~ ^${reUser}:${rePass}$ ]] || { warn "Bad user spec: $line"; return 0; }
+  [[ "$username" =~ ^$reUser$ && "$password" =~ ^$rePass$ ]] || { warn "Bad user spec: $line"; return 0; }
 
   local chpasswd_opt=
   [[ "${maybe_e:-}" == "e" ]] && chpasswd_opt="-e"
@@ -181,7 +279,7 @@ create_user() {
   local useradd_opts=()
   [[ -n "${uid:-}" ]] && useradd_opts+=(--non-unique --uid "$uid")
   if [[ -n "${gid:-}" ]]; then
-    if ! getent group "$gid" >/dev/null; then groupadd --gid "$gid" "grp_$gid"; fi
+    getent group "$gid" >/dev/null || groupadd --gid "$gid" "grp_$gid"
     useradd_opts+=(--gid "$gid")
   fi
 
@@ -191,7 +289,7 @@ create_user() {
     useradd "${useradd_opts[@]}" "$username"
   fi
 
-  mkdir -p "/home/$username" "/home/$username/.ssh"
+  mkdir -p "/home/$username/.ssh"
   chown root:root "/home/$username"
   chmod 755 "/home/$username"
 
@@ -234,33 +332,43 @@ if $startSshd; then
   fi
 fi
 
-# Hooks
+# ===== hooks =====
 if [[ -d /config/sshd/scripts ]]; then
   for f in /config/sshd/scripts/*; do
     [[ -x "$f" ]] && { log "Running $f"; "$f"; } || [[ -e "$f" ]] && warn "Not executable: $f"
   done
 fi
 
-# Cleanup stale runtime files
+# ===== cleanup stale sockets/pids and prep logs =====
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
-: > /var/log/auth.log   || true
-touch /var/log/fail2ban.log || true
+: > /var/log/auth.log       || true
+: > /var/log/fail2ban.log   || true
 
-# Start services
-log "Starting rsyslog";  service rsyslog start || (rsyslogd &)
-log "Starting fail2ban"; service fail2ban start || (fail2ban-server -xf start &)
-
-log "Starting sshd"
-/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config &
-sshd_pid=$!
-
-touch /var/log/auth.log /var/log/fail2ban.log
-tail -F /var/log/auth.log /var/log/fail2ban.log &
-tail_pid=$!
-
-if ! $startSshd; then
-  log "Executing custom command: $*"
-  exec "$@"
+# ===== optional Fail2Ban preflight =====
+if command -v fail2ban-client >/dev/null 2>&1; then
+  fail2ban-client -d > /opt/debug/fail2ban-dryrun.log 2>&1 || true
 fi
 
-wait "$sshd_pid"
+# ===== build-time seeding mode =====
+if [[ "${MODE:-start}" == "seed" ]]; then
+  log "MODE=seed: completed config/seed/update; not starting daemons"
+  exit 0
+fi
+
+# ===== start daemons =====
+if command -v rsyslogd >/dev/null 2>&1; then
+  log "Starting rsyslogd…"
+  rsyslogd || warn "rsyslogd failed to start"
+else
+  warn "rsyslogd not installed"
+fi
+
+if command -v fail2ban-server >/dev/null 2>&1; then
+  log "Starting fail2ban…"
+  fail2ban-server -xf start || warn "fail2ban-server failed to start"
+else
+  warn "fail2ban-server not installed"
+fi
+
+log "Starting sshd (foreground)…"
+exec /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config
