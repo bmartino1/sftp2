@@ -1,22 +1,28 @@
 # docker-sftpv2/examples/docker-compose.yml
 services:
   sftp:
-#    image: WIP... Docker Hub...
+    image: bmmbmm01/sftp2:latest #WIP... Docker Hub... image is still in beta...
     container_name: sftp-fail2ban
     hostname: SFTP
     environment:
       - TZ=America/Chicago
-      - AUTO_UPDATE=suite          # none | suite | custom
-      - DEFAULT_ADMIN=true         # seed admin:password on first boot
+      - AUTO_UPDATE=suite          # none | suite | custom (update teh appliation with in the docker...)
+      - DEFAULT_ADMIN=true         # seed admin:password on first boot/run
       - PUID=0
       - PGID=0
-      - F2B_CONFIG_MODE=symlink #Symlink(default), overley, noclober. replace
-      #Its better to use the user.conf file in the /config folder...
+      - F2B_CONFIG_MODE=symlink #Symlink(default), overley, noclober. replace(how to handle the /conf files for fail2ban...))
+      #Its better to use the user.conf file in the /config folder... create a default user and passowrd with docker variables....
       #- ADMIN_USER=admin           # optional
       #- ADMIN_PASS=password        # optional (CHANGE THIS!)
+      #adational SSHD dokcer config options....
       # - PASSWORD_AUTH=no         # optional: force pc ssh keys-only
       # - ALLOW_USERS=admin alice  # optional: restrict logins for PC keys
-
+      # TAIL_LOGS: "false"   # optional to turn off docker log data. logs still write to logs in container...
+    logging:  # optional: rotate noisy logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 #    networks:
 #      br0:
 #        ipv4_address: 192.168.1.254
@@ -29,14 +35,14 @@ services:
       - NET_RAW
     volumes:
       # App data: supply your custom fail2ban, sshd, users, etc.
-      - /mnt/vm-zfs/omv/data/sftp:/config
+      - /mnt/user/appdata:/config
       # User homes to share via SFTP:
-      - /data:/home/admin/sftp             # example ssh user folder shared path
+      - /data-to-share:/home/admin/sftp # example ssh user folder shared path
     ports:
       - "22:22"                            # if not using macvlan
     restart: unless-stopped
 
+#Compose connect to ipvlan/macvlan network...
 #networks:
 #  br0:
 #    external: true
-
