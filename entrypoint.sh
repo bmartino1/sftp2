@@ -39,7 +39,7 @@ fi
 
 # ===== required dirs =====
 mkdir -p \
-  /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
+  /config/debug/ /config/fail2ban /config/userkeys /config/sshd /config/sshd/keys \
   /config/fail2ban/{jail.d,filter.d,action.d} \
   /etc/fail2ban /etc/fail2ban/{jail.d,filter.d,action.d} \
   /var/run/sshd /var/run/fail2ban /var/log /opt/debug
@@ -354,7 +354,7 @@ rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
 
 # ===== optional preflight =====
 if command -v fail2ban-client >/dev/null 2>&1; then
-  fail2ban-client -d > /opt/debug/fail2ban-dryrun.log 2>&1 || true
+  fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
 fi
 
 # ===== build-time seeding mode =====
