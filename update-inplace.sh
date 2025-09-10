@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+echo log durring docker build
+cat /opt/debug/build-versions.txt
+
 set -Eeuo pipefail
 log(){ echo "[update] $*"; }
 
