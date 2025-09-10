@@ -48,6 +48,7 @@ mkdir -p \
 DEFAULT_ADMIN="${DEFAULT_ADMIN:-true}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-password}"
+
 if [[ ! -s /config/sshd/users.conf ]]; then
   if [[ "${DEFAULT_ADMIN,,}" == "true" ]]; then
     install -D -m 0644 /dev/stdin /config/sshd/users.conf <<EOF
@@ -65,7 +66,7 @@ EOF
   fi
 fi
 
-# ===== rsyslog: disable imklog noise =====
+# ===== rsyslog: disable imklog noise in containers =====
 if [[ "${DISABLE_IMKLOG:-true}" == "true" ]]; then
   if grep -q 'module(load="imklog"' /etc/rsyslog.conf 2>/dev/null; then
     sed -i -E 's/^\s*module\(load="imklog".*\)/# disabled in container: &/' /etc/rsyslog.conf || true
@@ -73,80 +74,73 @@ if [[ "${DISABLE_IMKLOG:-true}" == "true" ]]; then
   fi
 fi
 
-# ===== seed /defaults into /config (first boot only) =====
+# ===== helpers =====
 seed_default() { local src="$1" dst="$2"; [[ -f "$dst" ]] || install -D -m0644 "$src" "$dst"; }
+
+copy_pkg_dir_noclobber() {
+  # copy all *.conf from $1 (prefer) or $2 (fallback) into $3 (dest) without overwriting
+  local prefer="$1" fallback="$2" dest="$3" src=
+  if   [[ -d "$prefer"  ]]; then src="$prefer"
+  elif [[ -d "$fallback" ]]; then src="$fallback"
+  else warn "No packaged directory for $(basename "$dest")"; return 0; fi
+  find "$src" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | \
+    xargs -0 -I{} bash -c 'dst="$0/$(basename "$1")"; [[ -f "$dst" ]] || install -D -m0644 "$1" "$dst"' "$dest" {}
+  log "Ensured $(basename "$dest") from $src"
+}
+
+copy_pkg_root_noclobber() {
+  # copy selected root-level packaged *.conf (jail.conf, paths-*.conf) into /config/fail2ban
+  local dest="/config/fail2ban"
+  for f in /etc/fail2ban/jail.conf /etc/fail2ban/paths*.conf /usr/share/fail2ban/paths*.conf; do
+    [[ -f "$f" ]] || continue
+    local d="$dest/$(basename "$f")"
+    [[ -f "$d" ]] || install -D -m0644 "$f" "$d"
+  done
+  log "Ensured root-level Fail2Ban base (jail.conf, paths-*.conf)"
+}
+
+backup_and_link() {
+  local target="$1" src="$2"
+  if [[ -L "$target" ]]; then
+    ln -sfn "$src" "$target"; return 0
+  fi
+  if [[ -e "$target" ]]; then
+    if [[ ! -e "${target}.bak.original" ]]; then
+      mv "$target" "${target}.bak.original"
+      log "Backed up $target -> ${target}.bak.original"
+    else
+      rm -rf "${target}.bak" 2>/dev/null || true
+      mv "$target" "${target}.bak"
+      log "Rotated $target -> ${target}.bak"
+    fi
+  fi
+  ln -sfn "$src" "$target"
+}
+
+# ===== seed defaults to /config (first boot only; no clobber) =====
 [[ -f /config/sshd/sshd_config ]] || seed_default /defaults/sshd/sshd_config /config/sshd/sshd_config
 seed_default /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
 for f in /defaults/fail2ban/jail.d/*   ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/jail.d/$(basename "$f")"; done
 for f in /defaults/fail2ban/filter.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/filter.d/$(basename "$f")"; done
 for f in /defaults/fail2ban/action.d/* ; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/action.d/$(basename "$f")"; done
 
-# ===== ensure core packaged Fail2Ban files are in /config =====
-# We guarantee these TWO exist so jails work even in symlink mode.
-copy_if_missing() {
-  local name="$1"
-  local dest="$2"
-  shift 2
-  [[ -f "$dest" ]] && return 0
-  for src in "$@"; do
-    if [[ -f "$src" ]]; then
-      install -D -m0644 "$src" "$dest"
-      log "Ensured $(basename "$dest") from $src"
-      return 0
-    fi
-  done
-  return 1
-}
+# ===== ensure PACKAGED base files land in /config (no overwrite) =====
+copy_pkg_dir_noclobber /usr/share/fail2ban/filter.d  /etc/fail2ban/filter.d  /config/fail2ban/filter.d
+copy_pkg_dir_noclobber /usr/share/fail2ban/action.d  /etc/fail2ban/action.d  /config/fail2ban/action.d
+copy_pkg_root_noclobber
 
-# Try /usr/share first (Debian), then /etc (in case Debian ships there)
-copy_if_missing "sshd.conf" /config/fail2ban/filter.d/sshd.conf \
-  /usr/share/fail2ban/filter.d/sshd.conf \
-  /etc/fail2ban/filter.d/sshd.conf || warn "Could not seed sshd.conf (check your package)"
-
-# We'll decide banaction below, but ensure both action files exist if available
-copy_if_missing "iptables-multiport.conf" /config/fail2ban/action.d/iptables-multiport.conf \
-  /usr/share/fail2ban/action.d/iptables-multiport.conf \
-  /etc/fail2ban/action.d/iptables-multiport.conf || true
-
-copy_if_missing "nftables-multiport.conf" /config/fail2ban/action.d/nftables-multiport.conf \
-  /usr/share/fail2ban/action.d/nftables-multiport.conf \
-  /etc/fail2ban/action.d/nftables-multiport.conf || true
-
-# ===== auto-select banaction if not explicitly set =====
-if [[ ! -f /config/fail2ban/jail.d/99-banaction.local ]]; then
-  if command -v iptables >/dev/null 2>&1; then
-    cat >/config/fail2ban/jail.d/99-banaction.local <<'EOF'
-[DEFAULT]
-banaction = iptables-multiport
-EOF
-    log "Selected iptables-multiport (iptables present)"
-  elif command -v nft >/dev/null 2>&1; then
+# ===== auto-switch to nftables if iptables is absent =====
+if ! command -v iptables >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
+  if [[ ! -f /config/fail2ban/jail.d/99-banaction.local ]]; then
     cat >/config/fail2ban/jail.d/99-banaction.local <<'EOF'
 [DEFAULT]
 banaction = nftables-multiport
 EOF
     log "Selected nftables-multiport (iptables not found)"
-  else
-    warn "Neither iptables nor nft detected; leaving banaction untouched"
   fi
 fi
 
-# ===== backup-once-and-link (no growth on restarts) =====
-backup_and_link() {
-  local target="$1" src="$2"
-  if [[ -L "$target" ]]; then ln -sfn "$src" "$target"; return 0; fi
-  if [[ -e "$target" ]]; then
-    if [[ ! -e "${target}.bak.original" ]]; then
-      mv "$target" "${target}.bak.original"; log "Backed up $target -> ${target}.bak.original"
-    else
-      rm -rf "${target}.bak" 2>/dev/null || true
-      mv "$target" "${target}.bak"; log "Rotated $target -> ${target}.bak"
-    fi
-  fi
-  ln -sfn "$src" "$target"
-}
-
-# ===== Fail2Ban config wiring =====
+# ===== wire configs =====
 F2B_CONFIG_MODE="${F2B_CONFIG_MODE:-symlink}"
 F2B_CONFIG_MODE="${F2B_CONFIG_MODE,,}"
 
@@ -154,15 +148,20 @@ wire_fail2ban_config() {
   case "$1" in
     symlink)
       backup_and_link /etc/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
-      backup_and_link /etc/fail2ban/jail.d        /config/fail2ban/jail.d
-      backup_and_link /etc/fail2ban/filter.d      /config/fail2ban/filter.d
-      backup_and_link /etc/fail2ban/action.d      /config/fail2ban/action.d
+      backup_and_link /etc/fail2ban/jail.conf      /config/fail2ban/jail.conf
+      backup_and_link /etc/fail2ban/jail.d         /config/fail2ban/jail.d
+      backup_and_link /etc/fail2ban/filter.d       /config/fail2ban/filter.d
+      backup_and_link /etc/fail2ban/action.d       /config/fail2ban/action.d
+      # paths*.conf are read from /etc — link them too
+      for p in /config/fail2ban/paths*.conf; do
+        [[ -f "$p" ]] && backup_and_link "/etc/fail2ban/$(basename "$p")" "$p"
+      done
       log "Fail2Ban config mode=symlink (source of truth: /config/fail2ban)"
       ;;
     overlay)
       cp -a  /defaults/fail2ban/. /etc/fail2ban/
       cp -a  /config/fail2ban/.   /etc/fail2ban/
-      log "Fail2Ban config mode=overlay (user files override defaults in /etc)"
+      log "Fail2Ban config mode=overlay (user files over defaults in /etc)"
       ;;
     noclobber)
       cp -a  /defaults/fail2ban/. /etc/fail2ban/
@@ -173,14 +172,23 @@ wire_fail2ban_config() {
       cp -a  /config/fail2ban/.   /etc/fail2ban/
       log "Fail2Ban config mode=replace (/etc uses only /config)"
       ;;
-    *) warn "Unknown F2B_CONFIG_MODE='$1', falling back to symlink"; wire_fail2ban_config "symlink";;
+    *)
+      warn "Unknown F2B_CONFIG_MODE='$1', falling back to symlink"
+      wire_fail2ban_config "symlink"
+      ;;
   esac
 }
 wire_fail2ban_config "$F2B_CONFIG_MODE"
 
-# sanity: core files visible in /etc
-for must in /etc/fail2ban/filter.d/sshd.conf /etc/fail2ban/action.d/iptables-multiport.conf /etc/fail2ban/action.d/nftables-multiport.conf; do
-  [[ -f "$must" ]] || true
+# Sanity: critical files visible in /etc now
+for must in \
+  /etc/fail2ban/jail.conf \
+  /etc/fail2ban/filter.d/common.conf \
+  /etc/fail2ban/filter.d/sshd.conf \
+  /etc/fail2ban/action.d/iptables-multiport.conf \
+  /etc/fail2ban/action.d/nftables-multiport.conf
+do
+  [[ -f "$must" ]] || log "Note: missing $must (ok if unused); check seeding."
 done
 
 # ===== SSHD config persisted in /config =====
@@ -243,7 +251,7 @@ if [[ -n "${PASSWORD_AUTH:-}" ]]; then
 fi
 [[ -n "${ALLOW_USERS:-}" ]] && { grep -q '^AllowUsers' /etc/ssh/sshd_config && sed -i "s/^AllowUsers.*/AllowUsers ${ALLOW_USERS}/" /etc/ssh/sshd_config || printf "\nAllowUsers %s\n" "$ALLOW_USERS" >> /etc/ssh/sshd_config; }
 
-# ===== users from config/env/args =====
+# ===== users =====
 userConfPath="/config/sshd/users.conf"
 userConfFinalPath="/var/run/sftp/users.conf"
 mkdir -p "$(dirname "$userConfFinalPath")"
@@ -339,12 +347,12 @@ if [[ -d /config/sshd/scripts ]]; then
   done
 fi
 
-# ===== cleanup stale sockets/pids and prep logs =====
+# ===== cleanup & logs =====
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
 : > /var/log/auth.log       || true
 : > /var/log/fail2ban.log   || true
 
-# ===== optional Fail2Ban preflight =====
+# ===== optional preflight =====
 if command -v fail2ban-client >/dev/null 2>&1; then
   fail2ban-client -d > /opt/debug/fail2ban-dryrun.log 2>&1 || true
 fi
