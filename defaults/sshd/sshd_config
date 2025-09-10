@@ -71,7 +71,8 @@ LogLevel VERBOSE
 
 # Fail2ban SFTP server with logging data:
 # Use internal-sftp and log to AUTHPRIV at INFO level so it lands in /var/log/auth.log
-Subsystem sftp internal-sftp -f AUTHPRIV -l INFO
+#Subsystem sftp internal-sftp -f AUTHPRIV -l INFO
+#Duplicate now apart fail2ban and entypoint for new loffing loging...
 
 #
 # Additional Security Options
