@@ -68,30 +68,30 @@ EOF
   fi
 fi
 
-# ===== default bare min fail2ban config check (first boot) =====
+# ===== ensure base config presence (first boot) =====
 if [[ ! -e /config/fail2ban/fail2ban.local ]]; then
-  echo "$(date) [warn] fail2ban.local missing from /config... Restoring from /defaults"
+  log "fail2ban.local missing from /config — restoring from /defaults"
   cp /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
 else
-  echo "$(date) [info] Using existing /config/fail2ban/fail2ban.local"
+  log "Using existing /config/fail2ban/fail2ban.local"
 fi
 
 if [[ ! -e /config/fail2ban/jail.local ]]; then
-  echo "$(date) [warn] jail.local missing from /config... Restoring from /defaults"
+  log "jail.local missing from /config — restoring from /defaults"
   cp /defaults/fail2ban/jail.local /config/fail2ban/jail.local
 else
-  echo "$(date) [info] Using existing /config/fail2ban/jail.local"
+  log "Using existing /config/fail2ban/jail.local"
 fi
 
 if [[ ! -e /config/sshd/sshd_config ]]; then
-  echo "$(date) [warn] sshd_config missing from /config... Restoring from /defaults"
+  log "sshd_config missing from /config — restoring from /defaults"
   cp /defaults/sshd/sshd_config /config/sshd/sshd_config
 else
-  echo "$(date) [info] Using existing /config/sshd/sshd_config"
+  log "Using existing /config/sshd/sshd_config"
 fi
 
-# --- Permissions ---
-echo "$(date) [info] Setting needed ownership and permissions on /config"
+# --- Permissions (conservative) ---
+log "Setting ownership and permissions on /config"
 chown -R root:root /config/fail2ban /config/sshd
 chmod -R 755 /config
 for f in /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf; do
@@ -404,6 +404,18 @@ if command -v fail2ban-client >/dev/null 2>&1; then
   fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
 fi
 
+# If multiple Subsystem sftp lines exist, warn (OpenSSH allows only one)
+if [[ "$(grep -E '^[[:space:]]*Subsystem[[:space:]]+sftp' -c /etc/ssh/sshd_config || echo 0)" -gt 1 ]]; then
+  warn "Multiple 'Subsystem sftp' lines in sshd_config — keep ONLY: 'Subsystem sftp internal-sftp -f AUTHPRIV -l INFO'"
+fi
+
+# Validate sshd config before starting
+if ! sshd -t -f /etc/ssh/sshd_config 2> /config/debug/sshd-config-check.err; then
+  warn "sshd config check failed:"
+  sed 's/^/[sshd-check] /' /config/debug/sshd-config-check.err || true
+  exit 1
+fi
+
 # ===== build-time seeding mode =====
 if [[ "${MODE:-start}" == "seed" ]]; then
   log "MODE=seed: completed config/seed/update; not starting daemons"
@@ -418,7 +430,6 @@ else
   warn "rsyslogd not installed"
 fi
 
-# ===== start Fail2Ban (non-blocking) =====
 if command -v fail2ban-client >/dev/null 2>&1; then
   log "Starting fail2ban via client…"
   fail2ban-client -x start || warn "fail2ban-client start failed"
@@ -429,23 +440,15 @@ else
   warn "fail2ban not installed"
 fi
 
-# ===== mirror key logs to Docker stdout (toggle with TAIL_LOGS=false) =====
+# Mirror key logs to Docker stdout (toggle with TAIL_LOGS=false)
 case "${TAIL_LOGS:-true}" in
   1|true|yes|on|TRUE|YES|ON)
-    ( exec tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
+    ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
     ;;
-  *) ;;
 esac
 
-# ===== final: start sshd in foreground =====
+# ===== final: start sshd in foreground (NO -e; send logs to syslog/auth.log) =====
 mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd || true
 log "Starting sshd (foreground)…"
-exec /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config
-
-#sshd task not staying on. sleep and start the sshd sftp server.
-sleep 5
-nohup /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config >/var/log/sshd.foreground.log 2>&1 &
-sleep 1
-pgrep -a sshd
-ss -ltnp | grep ':22' || true
+exec /usr/sbin/sshd -D -f /etc/ssh/sshd_config
