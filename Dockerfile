@@ -62,6 +62,7 @@ RUN printf 'auth,authpriv.*\t/var/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
 COPY defaults/sshd/users.conf                      /defaults/sshd/users.conf
 COPY defaults/fail2ban/fail2ban.local              /defaults/fail2ban/fail2ban.local
+COPY defaults/fail2ban/jail.local              /defaults/fail2ban/jail.local
 COPY defaults/fail2ban/action.d/                   /defaults/fail2ban/action.d/
 COPY defaults/fail2ban/filter.d/                   /defaults/fail2ban/filter.d/
 COPY defaults/fail2ban/jail.d/                     /defaults/fail2ban/jail.d/
