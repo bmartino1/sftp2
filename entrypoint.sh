@@ -442,3 +442,10 @@ mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd || true
 log "Starting sshd (foreground)…"
 exec /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config
+
+#sshd task not staying on. sleep and start the sshd sftp server.
+sleep 5
+nohup /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config >/var/log/sshd.foreground.log 2>&1 &
+sleep 1
+pgrep -a sshd
+ss -ltnp | grep ':22' || true
