@@ -1,23 +1,21 @@
-WIP
+WIP - testing atm
 
 [preview]: https://raw.githubusercontent.com/MarkusMcNugen/docker-templates/master/sftp/SFTP.png "SFTP"
 
 ![alt text][preview]
 
 # SFTP with Fail2ban
-Easy to use SFTP ([SSH File Transfer Protocol](https://en.wikipedia.org/wiki/SSH_File_Transfer_Protocol)) server with [OpenSSH](https://en.wikipedia.org/wiki/OpenSSH) and [Fail2ban](https://www.fail2ban.org/wiki/index.php/Main_Page) installed for extra hardening against brute force attacks. A Updated Fork of MarkusMcNugen/docker-sftp Orginaly Forked from atmoz/sftp... Due to age of application, It was time for a refresh...
+Easy to use SFTP ([SSH File Transfer Protocol](https://en.wikipedia.org/wiki/SSH_File_Transfer_Protocol)) server with [OpenSSH](https://en.wikipedia.org/wiki/OpenSSH) and [Fail2ban](https://www.fail2ban.org/wiki/index.php/Main_Page) installed for extra hardening against brute force attacks. A Updated debian-slim runnign fail2ban and openssh server with my prepackaged whois log and jails.
 
 ---
 
 **More Info:**  
 Unraid Forum: [https://forums.unraid.net/topic/189050-support-sftp-fail2ban](https://forums.unraid.net/topic/189050-support-sftp-fail2ban)
 
-Docker Hub: [https://hub.docker.com/r/bmmbmm01/sftp](https://hub.docker.com/r/bmmbmm01/sftp)
+Docker Hub: [https://hub.docker.com/r/bmmbmm01/sftp2](https://hub.docker.com/r/bmmbmm01/sftp2)
 
 # Docker Features
-* Base: [phusion/baseimage](https://hub.docker.com/r/phusion/baseimage/)
-* --Ubuntu Noble Docker image
-* Size: ~310MB
+* Base: Debian 12 Slim
 * Hardened default ssh config
 * Fail2ban
 * Optional config volume can be mounted for custom ssh and fail2ban configuration and easily viewing fail2ban log
