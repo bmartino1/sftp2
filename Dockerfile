@@ -55,8 +55,9 @@ RUN set -eux; \
     chmod 0755 /etc/fail2ban /etc/fail2ban/jail.d /etc/fail2ban/filter.d /etc/fail2ban/action.d; \
     chmod 0755 /var/run/sshd /var/run/fail2ban /var/spool/rsyslog /defaults
 
-# Ensure auth logs land in /var/log/auth.log
-RUN printf 'auth,authpriv.*\t/var/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
+# Ensure auth logs land in /config/log/auth.log (persisted)
+RUN mkdir -p /config/log && \
+    printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 
 # ----- Defaults (seeded at runtime if user doesn't provide /config files) -----
 COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
