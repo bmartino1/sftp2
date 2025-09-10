@@ -30,4 +30,4 @@ action = %(banaction)s[name=%(__name__)s, port="22", protocol="tcp"]
 enabled = true
 port = 22
 filter = sshd
-logpath = /var/log/auth.log
+logpath = /config/log/auth.log
