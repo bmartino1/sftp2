@@ -1,4 +1,5 @@
 [DEFAULT]
+allowipv6 = auto
 
 # Logging
 loglevel = INFO
