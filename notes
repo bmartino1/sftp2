@@ -1,24 +1,22 @@
-as of 9/9/25
+WIP as of 9/9/25
 
 Base docker image:
-Debian-slim
+Debian 12 -slim image
 
-Version runnign in docker
-openssh: openssh 9.9p1
-https://launchpad.net/ubuntu/noble/+package/openssh-server
-https://archive.ubuntu.com/ubuntu/pool/main/o/openssh/
+log durring docker build:
+Fail2Ban: 1.0.2
+OpenSSH client: 9.2p1
+OpenSSH server: 1:9.2p1-2+deb12u7
+whois: 5.5.17
+glibc: 2.36
+Built at: 2025-09-10T03:22:41Z
 
-fail2ban: 1.1.0-8
-https://launchpad.net/ubuntu/noble/+package/fail2ban
-https://archive.ubuntu.com/ubuntu/pool/universe/f/fail2ban/
+Docker Run:
+Reading state information...
+openssh-server is already the newest version (1:9.2p1-2+deb12u7).
+openssh-client is already the newest version (1:9.2p1-2+deb12u7).
+openssh-sftp-server is already the newest version (1:9.2p1-2+deb12u7).
+fail2ban is already the newest version (1.0.2-2).
+whois is already the newest version (5.5.17).
 
-syslong-ng: syslog-ng 4.3.1-2build5
-https://answers.launchpad.net/ubuntu/noble/+package/syslog-ng
-
-Current Image version as seen in docker log
-[INFO] Versions of currently running software:
-Fail2Ban: 1.1.0
-OpenSSH client: 9.9p1
-OpenSSH server: 1:9.9p1-3ubuntu3
-
-WIP - as openssh moved to version 10 while breaking gclibs.
+WIP - isseus with fail2ban....
