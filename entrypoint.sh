@@ -69,7 +69,6 @@ EOF
 fi
 
 # ===== default bare min fail2ban config check (first boot) =====
-# --- Restore Default Configs if Missing in /config from build /defaults...---
 if [[ ! -e /config/fail2ban/fail2ban.local ]]; then
   echo "$(date) [warn] fail2ban.local missing from /config... Restoring from /defaults"
   cp /defaults/fail2ban/fail2ban.local /config/fail2ban/fail2ban.local
@@ -95,38 +94,29 @@ fi
 echo "$(date) [info] Setting needed ownership and permissions on /config"
 chown -R root:root /config/fail2ban /config/sshd
 chmod -R 755 /config
-# tolerate missing globs
 for f in /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf; do
   [[ -e "$f" ]] && chmod 644 "$f"
 done
 chmod 600 /config/sshd/keys/*_key 2>/dev/null || true
 chmod 600 /config/userkeys/*_key 2>/dev/null || true
 
-# --- Apply Bare Min Active Configs from /config (idempotent/no-op if already same) ---
+# --- Apply active configs (idempotent) ---
 smart_copy() {
-  # copy SRC to DST only if DST does not already resolve to the same file/content
   local src="$1" dst="$2"
   mkdir -p "$(dirname "$dst")"
   if [[ -e "$dst" ]]; then
-    # if both resolve to the same inode/realpath, skip
-    local rs="$(readlink -f "$src" || echo "$src")"
-    local rd="$(readlink -f "$dst" || echo "$dst")"
-    if [[ "$rs" == "$rd" ]]; then
-      info "Skip copy: $dst already points to $src"
-      return 0
-    fi
-    # if contents identical, skip
-    if cmp -s "$src" "$dst"; then
-      info "Skip copy: $dst already has same content"
-      return 0
-    fi
+    local rs rd
+    rs="$(readlink -f "$src" || echo "$src")"
+    rd="$(readlink -f "$dst" || echo "$dst")"
+    if [[ "$rs" == "$rd" ]]; then info "Skip copy: $dst already points to $src"; return 0; fi
+    if cmp -s "$src" "$dst"; then info "Skip copy: $dst already has same content"; return 0; fi
   fi
   install -D -m 0644 "$src" "$dst"
 }
 
-smart_copy /config/sshd/sshd_config            /etc/ssh/sshd_config
-smart_copy /config/fail2ban/fail2ban.local     /etc/fail2ban/fail2ban.local
-smart_copy /config/fail2ban/jail.local         /etc/fail2ban/jail.d/jail.local
+smart_copy /config/sshd/sshd_config        /etc/ssh/sshd_config
+smart_copy /config/fail2ban/fail2ban.local /etc/fail2ban/fail2ban.local
+smart_copy /config/fail2ban/jail.local     /etc/fail2ban/jail.d/jail.local
 
 # ===== rsyslog: disable imklog noise in containers =====
 if [[ "${DISABLE_IMKLOG:-true}" == "true" ]]; then
@@ -140,7 +130,6 @@ fi
 seed_default() { local src="$1" dst="$2"; [[ -f "$dst" ]] || install -D -m0644 "$src" "$dst"; }
 
 copy_pkg_dir_noclobber() {
-  # copy all *.conf from $1 (prefer) or $2 (fallback) into $3 (dest) without overwriting
   local prefer="$1" fallback="$2" dest="$3" src=
   if   [[ -d "$prefer"  ]]; then src="$prefer"
   elif [[ -d "$fallback" ]]; then src="$fallback"
@@ -151,7 +140,6 @@ copy_pkg_dir_noclobber() {
 }
 
 copy_pkg_root_noclobber() {
-  # copy selected root-level packaged *.conf (jail.conf, paths-*.conf) into /config/fail2ban
   local dest="/config/fail2ban"
   for f in /etc/fail2ban/jail.conf /etc/fail2ban/paths*.conf /usr/share/fail2ban/paths*.conf; do
     [[ -f "$f" ]] || continue
@@ -163,17 +151,13 @@ copy_pkg_root_noclobber() {
 
 backup_and_link() {
   local target="$1" src="$2"
-  if [[ -L "$target" ]]; then
-    ln -sfn "$src" "$target"; return 0
-  fi
+  if [[ -L "$target" ]]; then ln -sfn "$src" "$target"; return 0; fi
   if [[ -e "$target" ]]; then
     if [[ ! -e "${target}.bak.original" ]]; then
-      mv "$target" "${target}.bak.original"
-      log "Backed up $target -> ${target}.bak.original"
+      mv "$target" "${target}.bak.original"; log "Backed up $target -> ${target}.bak.original"
     else
       rm -rf "${target}.bak" 2>/dev/null || true
-      mv "$target" "${target}.bak"
-      log "Rotated $target -> ${target}.bak"
+      mv "$target" "${target}.bak"; log "Rotated $target -> ${target}.bak"
     fi
   fi
   ln -sfn "$src" "$target"
@@ -187,7 +171,7 @@ for f in /defaults/fail2ban/jail.d/*;   do [[ -f "$f" ]] && seed_default "$f" "/
 for f in /defaults/fail2ban/filter.d/*; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/filter.d/$(basename "$f")"; done
 for f in /defaults/fail2ban/action.d/*; do [[ -f "$f" ]] && seed_default "$f" "/config/fail2ban/action.d/$(basename "$f")"; done
 
-# ===== ensure PACKAGED base files land in /config (no overwrite) =====
+# ===== ensure packaged base files land in /config =====
 copy_pkg_dir_noclobber /usr/share/fail2ban/filter.d  /etc/fail2ban/filter.d  /config/fail2ban/filter.d
 copy_pkg_dir_noclobber /usr/share/fail2ban/action.d  /etc/fail2ban/action.d  /config/fail2ban/action.d
 copy_pkg_root_noclobber
@@ -434,12 +418,27 @@ else
   warn "rsyslogd not installed"
 fi
 
-if command -v fail2ban-server >/dev/null 2>&1; then
-  log "Starting fail2ban…"
-  fail2ban-server -xf start || warn "fail2ban-server failed to start"
+# ===== start Fail2Ban (non-blocking) =====
+if command -v fail2ban-client >/dev/null 2>&1; then
+  log "Starting fail2ban via client…"
+  fail2ban-client -x start || warn "fail2ban-client start failed"
+elif command -v fail2ban-server >/dev/null 2>&1; then
+  log "Starting fail2ban via server (detached)…"
+  fail2ban-server -x start >/var/log/f2b.start.log 2>&1 &
 else
-  warn "fail2ban-server not installed"
+  warn "fail2ban not installed"
 fi
 
+# ===== mirror key logs to Docker stdout (toggle with TAIL_LOGS=false) =====
+case "${TAIL_LOGS:-true}" in
+  1|true|yes|on|TRUE|YES|ON)
+    ( exec tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
+    ;;
+  *) ;;
+esac
+
+# ===== final: start sshd in foreground =====
+mkdir -p /var/run/sshd
+chmod 755 /var/run/sshd || true
 log "Starting sshd (foreground)…"
 exec /usr/sbin/sshd -e -D -f /etc/ssh/sshd_config
