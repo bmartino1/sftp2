@@ -2,14 +2,14 @@
 FROM debian:12-slim
 
 LABEL maintainer="bmartino1" \
-      org.opencontainers.image.title="expanded-sftp-fail2ban" \
+      org.opencontainers.image.title="sftp-fail2ban" \
       org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian slim)"
 
-ENV AUTO_UPDATE=none
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=America/Chicago \
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Chicago \
     AUTO_UPDATE=suite \
-    PUID=0 PGID=0
+    PUID=0 \
+    PGID=0
 
 # Create a few dirs early so later COPYs never fail
 RUN mkdir -p \
@@ -17,8 +17,8 @@ RUN mkdir -p \
       /etc/default/f2ban \
       /etc/fail2ban \
       /etc/fail2ban/filter.d \
+      /etc/fail2ban/jail.d \
       /etc/ssh \
-      /etc/syslog-ng \
       /var/log \
       /var/run/sshd \
       /var/run/fail2ban
@@ -40,9 +40,6 @@ RUN set -eux; \
       /var/run/fail2ban \
       /var/spool/rsyslog \
       /config \
-      /etc/fail2ban/jail.d \
-      /etc/fail2ban/filter.d \
-      /etc/fail2ban/action.d \
       /defaults/sshd \
       /defaults/fail2ban/jail.d \
       /defaults/fail2ban/filter.d \
@@ -52,7 +49,6 @@ RUN set -eux; \
     chown root:adm /var/log/auth.log || true; \
     chmod 0640 /var/log/auth.log || true; \
     chmod 0644 /var/log/fail2ban.log || true; \
-    chmod 0755 /etc/fail2ban /etc/fail2ban/jail.d /etc/fail2ban/filter.d /etc/fail2ban/action.d; \
     chmod 0755 /var/run/sshd /var/run/fail2ban /var/spool/rsyslog /defaults
 
 # Ensure auth logs land in /config/log/auth.log (persisted)
@@ -63,7 +59,7 @@ RUN mkdir -p /config/log && \
 COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
 COPY defaults/sshd/users.conf                      /defaults/sshd/users.conf
 COPY defaults/fail2ban/fail2ban.local              /defaults/fail2ban/fail2ban.local
-COPY defaults/fail2ban/jail.local              /defaults/fail2ban/jail.local
+COPY defaults/fail2ban/jail.local                  /defaults/fail2ban/jail.local
 COPY defaults/fail2ban/action.d/                   /defaults/fail2ban/action.d/
 COPY defaults/fail2ban/filter.d/                   /defaults/fail2ban/filter.d/
 COPY defaults/fail2ban/jail.d/                     /defaults/fail2ban/jail.d/
@@ -98,12 +94,6 @@ RUN mkdir -p /opt/debug && \
 
 # Persist /config by default
 VOLUME ["/config"]
-
-#Build - Debug - First run check
-#RUN /usr/local/bin/update-inplace.sh
-#COPY entrypoint.sh /opt/debug/entrypoint.sh
-#RUN chmod +x /opt/debug/*.sh
-#RUN /opt/debug/entrypoint.sh
 
 # Tini as PID 1 + entrypoint
 ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]
