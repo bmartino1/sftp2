@@ -56,7 +56,7 @@ if [[ ! -s /config/sshd/users.conf ]]; then
     install -D -m 0644 /dev/stdin /config/sshd/users.conf <<EOF
 # username:password[:e][:uid][:gid][:dir1,dir2,...]
 # seeded on first boot — CHANGE THIS PASSWORD!
-${ADMIN_USER}:${ADMIN_PASS}
+${ADMIN_USER}:${ADMIN_PASS}:1000:100
 EOF
     log "Seeded /config/sshd/users.conf with default admin (CHANGE THE PASSWORD)"
   else
@@ -242,7 +242,16 @@ done
 backup_and_link /etc/ssh/sshd_config /config/sshd/sshd_config
 
 # ===== ensure logs =====
-touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log || true
+mkdir -p /config/log
+# auth + f2b + whois (whois may be created by action; touching is fine)
+: > /config/log/auth.log       || true
+: > /config/log/fail2ban.log   || true
+: > /config/log/whois.log      || true
+# (Optionally keep legacy files for compatibility)
+# : > /var/log/auth.log       || true
+# : > /var/log/fail2ban.log   || true
+#Old working ... before moving to new log location... to clear docker logs at docker start...
+#touch /config/fail2ban/{whois.log,fail2ban.log} /var/log/auth.log /var/log/fail2ban.log || true
 
 # ===== perms =====
 chown -R root:root /config/sshd /config/fail2ban || true
@@ -423,6 +432,9 @@ if [[ "${MODE:-start}" == "seed" ]]; then
 fi
 
 # ===== start daemons =====
+# Before starting rsyslog, make sure the rsyslog rule targets /config/log/auth.log
+printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
+
 if command -v rsyslogd >/dev/null 2>&1; then
   log "Starting rsyslogd…"
   rsyslogd || warn "rsyslogd failed to start"
@@ -440,15 +452,21 @@ else
   warn "fail2ban not installed"
 fi
 
-# Mirror key logs to Docker stdout (toggle with TAIL_LOGS=false)
+# ===== mirror key logs to Docker stdout (toggle with TAIL_LOGS=false) =====
 case "${TAIL_LOGS:-true}" in
   1|true|yes|on|TRUE|YES|ON)
-    ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
+    ( tail -n+1 -q -F /config/log/auth.log /config/log/fail2ban.log /config/log/whois.log 2>/dev/null & )
     ;;
 esac
+#Old semi-working... Mirror key logs to Docker stdout (toggle with TAIL_LOGS=false)
+#case "${TAIL_LOGS:-true}" in
+#  1|true|yes|on|TRUE|YES|ON)
+#    ( tail -n+1 -q -F /var/log/auth.log /var/log/fail2ban.log 2>/dev/null & )
+#    ;;
+#esac
 
 # ===== final: start sshd in foreground (NO -e; send logs to syslog/auth.log) =====
 mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd || true
-log "Starting sshd (foreground)…"
+log "Starting sshd"
 exec /usr/sbin/sshd -D -f /etc/ssh/sshd_config
