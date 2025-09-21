@@ -18,20 +18,46 @@ Docker Hub: [https://hub.docker.com/r/bmmbmm01/sftp2](https://hub.docker.com/r/b
 * Fail2ban
 * Optional config volume can be mounted for custom ssh and fail2ban configuration and easily viewing fail2ban log
 
+# Environment variables
+
+| Name | Default | Description |
+|---|---|---|
+| `TZ` | (unset) | Container timezone, e.g. `America/Chicago`. |
+| `AUTO_UPDATE` | `none` | Update policy: `none`, `suite`, `custom`. |
+| `DEFAULT_ADMIN` | `true` | On first boot, seed `/config/sshd/users.conf`. |
+| `ADMIN_USER` | `admin` | Username for seeded admin (if `DEFAULT_ADMIN=true`). |
+| `ADMIN_PASS` | `password` | Password for seeded admin (***change this***). |
+| `PASSWORD_AUTH` | (unset) | Force OpenSSH password auth policy (yes/no). |
+| `ALLOW_USERS` | (unset) | Restrict login to listed users. |
+| `F2B_CONFIG_MODE` | `symlink` | Handle `/etc/fail2ban` configs (`symlink`, `overlay`, `noclobber`, `replace`). |
+| `DISABLE_IMKLOG` | `true` | Disable rsyslog imklog. |
+| `MODE` | `start` | `start` = normal boot; `seed` = config/update then exit. |
+| `SFTP_USERS` | (unset) | Inline user specs: `user:pass[:e][:uid][:gid][:dirs]`. |
+| `TAIL_LOGS` | `true` | Mirror selected logs to docker logs. |
+| `LOG_STREAMS` | `auth,fail2ban` | Comma-separated: `auth`, `fail2ban`, `whois`. |
+| `DEBUG_TESTING` | `false` | Run Fail2Ban dry-run + sshd config check (output to `/config/debug/`). |
+| `MAIL_SERVER` | `false` | Allow mail actions (remove `zz-nomail.local`). |
+
+**Notes**
+- Persistent logs always in `/config/log/`.
+- `AUTO_UPDATE=custom` runs `/config/updateapps.sh`.
+- `MAIL_SERVER=true` lets you use your own mail actions. (advance side loading and settign with custom and udpate apps.)
+- Docker default will stop mail action and force login to log folder.
+
 # Optional Update script
 
 Docker Varaible -e Auto_Update=
-true 	Runs /stage/updateapps.sh if present
+true 	Runs default update-inplace.sh script to update core apps
 custom	Runs /config/updateapps.sh if present
-false or empty skips updates
+false or empty skips auto updates for ssh, fail2ban and other core system componenets.
 
 ```
 cd /config
-wget https://raw.githubusercontent.com/bmartino1/docker-sftp/refs/heads/master/updateapps.sh
+wget https://raw.githubusercontent.com/bmartino1/sftp2/refs/heads/main/update-inplace.sh
 ```
 
-you can add the updateapps.sh script in the /conf and this should install the lattes repo from archive.ubuntu.com to install the latest openssh and fail2ban application.
-(Bleeding edge) Otherwise see notes as that is what's packaged for stable release following release cycles of [phusion/baseimage](https://hub.docker.com/r/phusion/baseimage/)
+you can add the update apps script in the /conf and this should install the lattest repo from archive.ubuntu.com to install the latest openssh and fail2ban application...
+(Bleeding edge) Otherwise see notes as that is what's packaged for stable release following release cycles.
 
 # Run container from Docker registry
 ```
@@ -50,13 +76,12 @@ User "user" with password "pass" can login with sftp and upload files to a folde
 | `config` | Yes | SSH and Fail2ban config files | `/your/config/path/:/config`|
 
 ## Paths/Files
-There is a /stage folder that has the orginal configs. The entrypoint script will remake the /config a Volume is not need to run this docker.
+There is a /debug folder that has the at build what was runnign. The entrypoint script will remake the /config a Volume is not need to run this docker.
 The Entypoint Script has had some updates and the Docker Log will be able to explain and show issues. 
 Fail2ban and sshd have ben updated and scripts/configs updated. 
-If you want to make edits to sshd, fail2ban, and jails configurations as long as they exist in /config they will be deployed and used. 
-A major edit was done to use the ubuntu package maintainers files and our edits to run are now using the.local file the preferred way...
+If you want to make edits to sshd, fail2ban, and jails configurations as long as they exist in /config they will be deployed and used. see docker varable opton on how to handle fail2ban and adatioanl jails outsdie of my prefereed defaults. A major edit was done to use the ubuntu package maintainers files and our edits to run are now using the.local file the preferred way...
 
-Entrypoint Script will make any missing files and set correct permission for any add configs and user keys...
+Entrypoint Script will make any missing files and set correct permission for any add configs and user keys... so even if varibles are missing it will run.
 
 ### SSH
 | Path | Required | Function |
@@ -177,7 +202,7 @@ bindmount /data/docs /home/peter/docs --read-only
 **Note:** The time when this image was last built can delay the availability of an OpenSSH release. Since this is an automated build linked with [phusion/baseimage](https://hub.docker.com/r/phusion/baseimage/), the build will depend on how often they push changes (out of my control). You can of course make this more predictable by cloning this repo and run your own build manually.
 
 # Building the container yourself
-To build this container, clone the repository and cd into it.
+To build this container, clone the repository and cd into it. This is a refactor to movbe off ubnutu and into debain slim. alpine is missing apk packages to run there.
 
 ## Build it:
 ```
@@ -196,7 +221,8 @@ $ docker run \
 This will start a container as described in the "Run container from Docker registry" section
 
 ## Using Docker Compose:
-(--See examples folder)
+[See examples folder] (https://github.com/bmartino1/sftp2/blob/main/examples/docker-compose.yml)
+
 ```
 sftp:
     image: bmmbmm01/sftp2:latest
