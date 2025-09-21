@@ -1,5 +1,3 @@
-WIP - testing atm
-
 [preview]: https://raw.githubusercontent.com/MarkusMcNugen/docker-templates/master/sftp/SFTP.png "SFTP"
 
 ![alt text][preview]
@@ -198,6 +196,7 @@ $ docker run \
 This will start a container as described in the "Run container from Docker registry" section
 
 ## Using Docker Compose:
+(--See examples folder)
 ```
 sftp:
     image: bmmbmm01/sftp2:latest
