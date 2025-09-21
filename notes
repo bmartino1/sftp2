@@ -18,10 +18,3 @@ openssh-client is already the newest version (1:9.2p1-2+deb12u7).
 openssh-sftp-server is already the newest version (1:9.2p1-2+deb12u7).
 fail2ban is already the newest version (1.0.2-2).
 whois is already the newest version (5.5.17).
-
-Final Notes:
-WIP- May never actual implement....
-need to fix and add varibale options to add or remove whois log as default should atleast ahve sshd aut and fail2ban log disaply...
-Should make teh faile2ban and sshd eror check a optional debu docer variable.
-?docker varable for the no mail for thoses using custom to add a smtp email server?
-My default and wanted options out of this docker and systems are workign otherwise...
