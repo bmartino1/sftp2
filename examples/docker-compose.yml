@@ -4,30 +4,70 @@ services:
     image: bmmbmm01/sftp2:latest
     container_name: sftp-fail2ban
     hostname: SFTP
+
     environment:
       - TZ=America/Chicago
-      - AUTO_UPDATE=suite          # none | suite | custom (update the appliation with in the docker...)
-      - DEFAULT_ADMIN=true         # seed admin:password on first boot/run in user config file
-      - PUID=0
-      - PGID=0
-      - F2B_CONFIG_MODE=symlink    #Symlink(default), overley, noclober. replace (how to handle the /conf files for fail2ban...)
 
-      #Its better to use the user.conf file in the /config folder... create a default user and passowrd with docker variables...
-      #- ADMIN_USER=admin           # optional
-      #- ADMIN_PASS=password        # optional (CHANGE THIS!)
+      # Update policy: none(false,off,0, no) | suite(true, on, 1, yes) | custom
+      - AUTO_UPDATE=suite
+      #Optoin not set defults to none
 
-      #adational SSHD docker config options... for ssh key connection only.
-      # - PASSWORD_AUTH=no         # optional: force pc ssh keys-only
-      # - ALLOW_USERS=admin alice  # optional: restrict logins for PC keys
+      # Fail2Ban config wiring (symlink | overlay | noclobber | replace)
+      - F2B_CONFIG_MODE=symlink
+      #How /etc/fail2ban is populated from /config/fail2ban: symlink (source of truth = /config), overlay (defaults + then /config over), noclobber (defaults + non-clobber copy from /config), replace (use /config only).
 
-      # TAIL_LOGS: "false"   # optional to turn off logs in the docker log view data. logs still write to logs in container /config/log folder...
-      #Not all options listed here....
-    logging:  # optional: rotate noisy logs
+      # Docker log mirroring
+      - TAIL_LOGS=true              # mirror selected logs to `docker logs` to turn off docker log to sdtout. (logs will still ppopulate in log folder
+      - LOG_STREAMS=auth,fail2ban   # valid: auth,fail2ban,whois (must be comma seperated list tels the docker sdtou logs which log file to view in docker log)
+      #End users are now responsible for log rotation and monitoring! old system erased logs at boot now its end users.
+
+      # First-boot user seeding (creates /config/sshd/users.conf if missing)
+      - DEFAULT_ADMIN=false         # seed admin:password on first boot/run in user config file (set to false to apply your onw once at start true will write teh default
+      - ADMIN_USER=admin            # change me or disable DEFAULT_ADMIN
+      - ADMIN_PASS=change-me-now    # change me!
+      # Optional inline users in addition to /config/sshd/users.conf
+      # username:password[:e][:uid][:gid][:dir1,dir2,...]
+      # - SFTP_USERS=alice:secret:1001:100:uploads,downloads bob:secret:1002:100
+
+      # SSHD hardening toggles (optional)
+      #- PASSWORD_AUTH=no            # force keys-only login. must have ssh keys in folder
+      #- ALLOW_USERS=admin alice     # restrict who can log in
+      
+      # rsyslog imklog off in containers (no /proc/kmsg)
+      #- DISABLE_IMKLOG=true (on by default to fix a small log spam ignore issue)
+
+      # Preflight checks (writes to /config/debug when true) false by default
+      #- DEBUG_TESTING=false
+      # Start mode: start (normal) | seed (prepare config then exit)
+      #- MODE=start (testing debug) 
+
+      # Allow mail actions (removes no-mail overrides) *False by default for folder and docker login. advance users option for sidlaoding a smtp sever and send reports...
+      #- MAIL_SERVER=false
+
+# recommended: rotate container stdout logs
+    logging: 
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-#Optional Unriad Macvlan/IpVlan
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    volumes:
+      # App data: supply your custom fail2ban/sshd/users/etc.
+      - /mnt/user/appdata:/config
+
+      # Example: user home content to share via SFTP
+      - /data-to-share:/home/admin/sftp
+
+    ports:
+      - "22:22"          # expose if not using macvlan/ipvlan
+
+    restart: unless-stopped
+
+#Optional Unriad Macvlan/IpVlan example
 #    networks:
 #      br0:
 #        ipv4_address: 192.168.1.254
@@ -35,20 +75,8 @@ services:
 #    dns:
 #      - 1.1.1.1
 #      - 208.67.222.222
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    volumes:
-      # App data: supply your custom fail2ban, sshd, users, etc.
-      - /mnt/user/appdata:/config
-      # User homes to share via SFTP:
-      - /data-to-share:/home/admin/sftp 
-      # example ssh user folder shared path
-    ports:
-      - "22:22"  # if not using macvlan and using default docker bridge
-    restart: unless-stopped
 
-#Compose connect to ipvlan/macvlan network...
+#Compose connect to Unraid ipvlan/macvlan network...
 #networks:
 #  br0:
 #    external: true
