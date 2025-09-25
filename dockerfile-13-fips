@@ -1,9 +1,9 @@
-# ---- Debian 13 (trixie) slim, FIPS-enabled image ----
+# ---- Debian 13 (trixie) slim, FIPS-aware image ----
 FROM debian:trixie-slim
 
 LABEL maintainer="bmartino1" \
       org.opencontainers.image.title="sftp-fail2ban" \
-      org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian 13 slim, FIPS-enabled)"
+      org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian 13 slim, FIPS-aware)"
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/Chicago \
@@ -23,22 +23,19 @@ RUN mkdir -p \
       /var/run/sshd \
       /var/run/fail2ban
 
-# Core packages (trixie names). Include OpenSSL FIPS provider + nftables backend.
+# Core packages (use nftables for Fail2Ban’s nft action)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       openssh-server openssh-client openssh-sftp-server \
       fail2ban rsyslog \
-      whois iptables-nft \
+      whois nftables \
       tzdata ca-certificates curl bash tini iproute2 procps \
-      init-system-helpers net-tools \
-      openssl-provider-fips \
+      init-system-helpers net-tools openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# ----- Enable OpenSSL 3 FIPS provider system-wide -----
-# This makes all OpenSSL users (including OpenSSH) default to FIPS-approved algorithms.
+# ----- Write both OpenSSL configs (FIPS & default) as temp files -----
 RUN set -eux; \
-    cat >/etc/ssl/openssl.cnf <<'EOF'
-# OpenSSL 3 system configuration with FIPS provider enabled
+  cat >/tmp/openssl-fips.cnf <<'EOF'
 openssl_conf = openssl_init
 
 [openssl_init]
@@ -46,16 +43,46 @@ providers = provider_sect
 alg_section = algorithm_sect
 
 [provider_sect]
-base = base_sect
 fips = fips_sect
+base = base_sect
 
 [fips_sect]
 activate = 1
 
+[base_sect]
+activate = 1
+
 [algorithm_sect]
-# Only pick algorithms that satisfy FIPS requirements by default
+# Prefer FIPS-approved algorithms by default
 default_properties = fips=yes
 EOF
+
+RUN set -eux; \
+  cat >/tmp/openssl-default.cnf <<'EOF'
+# Default OpenSSL 3 system configuration (no FIPS module present)
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+
+[default_sect]
+activate = 1
+EOF
+
+# ----- Select the right OpenSSL config at build time -----
+RUN set -eux; \
+  mkdir -p /opt/debug; \
+  if [ -e /usr/lib/x86_64-linux-gnu/ossl-modules/fips.so ] || [ -e /usr/lib/ossl-modules/fips.so ]; then \
+    echo "[build] FIPS provider found; enabling FIPS defaults" | tee /opt/debug/fips-status.txt; \
+    cp /tmp/openssl-fips.cnf /etc/ssl/openssl.cnf; \
+  else \
+    echo "[build] FIPS provider not present; using default OpenSSL provider" | tee /opt/debug/fips-status.txt; \
+    cp /tmp/openssl-default.cnf /etc/ssl/openssl.cnf; \
+  fi; \
+  rm -f /tmp/openssl-*.cnf
 
 # ----- Pre-make: runtime dirs & log files with sane perms -----
 RUN set -eux; \
@@ -68,9 +95,7 @@ RUN set -eux; \
       /defaults/fail2ban/jail.d \
       /defaults/fail2ban/filter.d \
       /defaults/fail2ban/action.d; \
-    # do NOT ship host keys
     rm -f /etc/ssh/ssh_host_*key*; \
-    # logs
     touch /var/log/auth.log /var/log/fail2ban.log; \
     chown root:adm /var/log/auth.log || true; \
     chmod 0640 /var/log/auth.log || true; \
@@ -82,7 +107,6 @@ RUN mkdir -p /config/log && \
     printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 
 # ----- Defaults (seeded at runtime if user doesn't provide /config files) -----
-# We still copy your repo defaults, then overlay FIPS-safe sshd & f2b overrides.
 COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
 COPY defaults/sshd/users.conf                      /defaults/sshd/users.conf
 COPY defaults/fail2ban/fail2ban.local              /defaults/fail2ban/fail2ban.local
@@ -91,12 +115,10 @@ COPY defaults/fail2ban/action.d/                   /defaults/fail2ban/action.d/
 COPY defaults/fail2ban/filter.d/                   /defaults/fail2ban/filter.d/
 COPY defaults/fail2ban/jail.d/                     /defaults/fail2ban/jail.d/
 
-# ---- Overlay: FIPS-hardened sshd defaults (replaces any repo settings that conflict) ----
-# * No ed25519 host key, no chacha20
-# * Only NIST curves + RSA-SHA2, AES-GCM/CTR, HMAC-SHA2
+# ---- Overlay: FIPS-hardened sshd defaults (no ed25519/chacha20) ----
 RUN set -eux; \
   cat > /defaults/sshd/sshd_config <<'EOF'
-# FIPS-compatible OpenSSH server configuration
+# FIPS-compatible OpenSSH server configuration (defaults)
 Port 22
 Protocol 2
 UsePAM yes
@@ -111,11 +133,12 @@ LoginGraceTime 30
 MaxAuthTries 3
 ClientAliveInterval 300
 ClientAliveCountMax 2
-# Host keys: RSA + ECDSA (no ed25519 in FIPS mode)
+
+# Host keys: RSA + ECDSA (no ed25519 in FIPS)
 HostKey /etc/ssh/ssh_host_rsa_key
 HostKey /etc/ssh/ssh_host_ecdsa_key
 
-# FIPS algorithm policy
+# FIPS-friendly algorithms
 Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes128-ctr
 MACs hmac-sha2-512,hmac-sha2-256
 KexAlgorithms ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
@@ -126,11 +149,11 @@ PubkeyAcceptedKeyTypes ecdsa-sha2-nistp384,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-
 SyslogFacility AUTHPRIV
 LogLevel VERBOSE
 
-# SFTP subsystem
-Subsystem sftp /usr/lib/openssh/sftp-server
+# SFTP subsystem (internal) — entrypoint will enforce AUTHPRIV/INFO flags
+Subsystem sftp internal-sftp
 EOF
 
-# ---- Fail2Ban: prefer nftables action by default (works on Debian 12/13) ----
+# ---- Fail2Ban: prefer nftables action by default ----
 RUN set -eux; \
   cat > /defaults/fail2ban/jail.d/00-banaction-nft.conf <<'EOF'
 [DEFAULT]
@@ -143,7 +166,7 @@ RUN set -eux; \
     find /defaults -type f -exec chmod 0644 {} \; ; \
     chown -R root:root /defaults
 
-# Entrypoint & updater (your existing scripts)
+# Entrypoint & updater
 COPY entrypoint.sh      /usr/local/bin/entrypoint.sh
 COPY update-inplace.sh  /usr/local/bin/update-inplace.sh
 RUN chmod +x /usr/local/bin/*.sh
@@ -153,7 +176,7 @@ EXPOSE 22
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD bash -lc 'ss -lnt | grep -q ":22 " || exit 1'
 
-# ----- Build-time version stamp (what this image ships with) -----
+# ----- Build-time version stamp -----
 RUN mkdir -p /opt/debug && \
     bash -lc '\
       { \
@@ -161,6 +184,7 @@ RUN mkdir -p /opt/debug && \
         echo "OpenSSH client: $(ssh -V 2>&1 | sed -n '\''s/.*OpenSSH_\([^ ]*\).*/\1/p'\'')"; \
         echo "OpenSSH server: $(dpkg-query -W -f='\''${Version}\n'\'' openssh-server 2>/dev/null)"; \
         echo "OpenSSL providers:"; openssl list -providers 2>/dev/null | sed "s/^/  /"; \
+        echo "FIPS status:"; cat /opt/debug/fips-status.txt 2>/dev/null || echo "unknown"; \
         echo "whois: $(dpkg-query -W -f='\''${Version}\n'\'' whois 2>/dev/null)"; \
         echo "glibc: $(ldd --version 2>/dev/null | head -n1 | awk '\''{print $NF}'\'')"; \
         date -u +"Built at: %Y-%m-%dT%H:%M:%SZ"; \
@@ -171,4 +195,3 @@ VOLUME ["/config"]
 
 # Tini as PID 1 + entrypoint
 ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]
-
