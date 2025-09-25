@@ -18,3 +18,6 @@ openssh-client is already the newest version (1:9.2p1-2+deb12u7).
 openssh-sftp-server is already the newest version (1:9.2p1-2+deb12u7).
 fail2ban is already the newest version (1.0.2-2).
 whois is already the newest version (5.5.17).
+
+debian 13 openssh 10 and openssl fips nist compliant test image: bmmbmm01/sftp2:13-fips
+*Edits to entry point for fips compliant ssh keys.
