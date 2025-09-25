@@ -1,1 +1,174 @@
+# ---- Debian 13 (trixie) slim, FIPS-enabled image ----
+FROM debian:trixie-slim
+
+LABEL maintainer="bmartino1" \
+      org.opencontainers.image.title="sftp-fail2ban" \
+      org.opencontainers.image.description="Secure SFTP with OpenSSH + Fail2Ban (Debian 13 slim, FIPS-enabled)"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Chicago \
+    AUTO_UPDATE=suite \
+    PUID=0 \
+    PGID=0
+
+# Create a few dirs early so later COPYs never fail
+RUN mkdir -p \
+      /etc/default/sshd \
+      /etc/default/f2ban \
+      /etc/fail2ban \
+      /etc/fail2ban/filter.d \
+      /etc/fail2ban/jail.d \
+      /etc/ssh \
+      /var/log \
+      /var/run/sshd \
+      /var/run/fail2ban
+
+# Core packages (trixie names). Include OpenSSL FIPS provider + nftables backend.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      openssh-server openssh-client openssh-sftp-server \
+      fail2ban rsyslog \
+      whois iptables-nft \
+      tzdata ca-certificates curl bash tini iproute2 procps \
+      init-system-helpers net-tools \
+      openssl-provider-fips \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- Enable OpenSSL 3 FIPS provider system-wide -----
+# This makes all OpenSSL users (including OpenSSH) default to FIPS-approved algorithms.
+RUN set -eux; \
+    cat >/etc/ssl/openssl.cnf <<'EOF'
+# OpenSSL 3 system configuration with FIPS provider enabled
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+alg_section = algorithm_sect
+
+[provider_sect]
+base = base_sect
+fips = fips_sect
+
+[fips_sect]
+activate = 1
+
+[algorithm_sect]
+# Only pick algorithms that satisfy FIPS requirements by default
+default_properties = fips=yes
+EOF
+
+# ----- Pre-make: runtime dirs & log files with sane perms -----
+RUN set -eux; \
+    mkdir -p \
+      /var/run/sshd \
+      /var/run/fail2ban \
+      /var/spool/rsyslog \
+      /config \
+      /defaults/sshd \
+      /defaults/fail2ban/jail.d \
+      /defaults/fail2ban/filter.d \
+      /defaults/fail2ban/action.d; \
+    # do NOT ship host keys
+    rm -f /etc/ssh/ssh_host_*key*; \
+    # logs
+    touch /var/log/auth.log /var/log/fail2ban.log; \
+    chown root:adm /var/log/auth.log || true; \
+    chmod 0640 /var/log/auth.log || true; \
+    chmod 0644 /var/log/fail2ban.log || true; \
+    chmod 0755 /var/run/sshd /var/run/fail2ban /var/spool/rsyslog /defaults
+
+# Ensure auth logs land in /config/log/auth.log (persisted)
+RUN mkdir -p /config/log && \
+    printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
+
+# ----- Defaults (seeded at runtime if user doesn't provide /config files) -----
+# We still copy your repo defaults, then overlay FIPS-safe sshd & f2b overrides.
+COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
+COPY defaults/sshd/users.conf                      /defaults/sshd/users.conf
+COPY defaults/fail2ban/fail2ban.local              /defaults/fail2ban/fail2ban.local
+COPY defaults/fail2ban/jail.local                  /defaults/fail2ban/jail.local
+COPY defaults/fail2ban/action.d/                   /defaults/fail2ban/action.d/
+COPY defaults/fail2ban/filter.d/                   /defaults/fail2ban/filter.d/
+COPY defaults/fail2ban/jail.d/                     /defaults/fail2ban/jail.d/
+
+# ---- Overlay: FIPS-hardened sshd defaults (replaces any repo settings that conflict) ----
+# * No ed25519 host key, no chacha20
+# * Only NIST curves + RSA-SHA2, AES-GCM/CTR, HMAC-SHA2
+RUN set -eux; \
+  cat > /defaults/sshd/sshd_config <<'EOF'
+# FIPS-compatible OpenSSH server configuration
+Port 22
+Protocol 2
+UsePAM yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin prohibit-password
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+LoginGraceTime 30
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 2
+# Host keys: RSA + ECDSA (no ed25519 in FIPS mode)
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+
+# FIPS algorithm policy
+Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes128-ctr
+MACs hmac-sha2-512,hmac-sha2-256
+KexAlgorithms ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+HostKeyAlgorithms ecdsa-sha2-nistp384,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256
+PubkeyAcceptedKeyTypes ecdsa-sha2-nistp384,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256
+
+# Logging
+SyslogFacility AUTHPRIV
+LogLevel VERBOSE
+
+# SFTP subsystem
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
+
+# ---- Fail2Ban: prefer nftables action by default (works on Debian 12/13) ----
+RUN set -eux; \
+  cat > /defaults/fail2ban/jail.d/00-banaction-nft.conf <<'EOF'
+[DEFAULT]
+banaction = nftables-multiport
+EOF
+
+# Lock down default file modes
+RUN set -eux; \
+    find /defaults -type d -exec chmod 0755 {} \; ; \
+    find /defaults -type f -exec chmod 0644 {} \; ; \
+    chown -R root:root /defaults
+
+# Entrypoint & updater (your existing scripts)
+COPY entrypoint.sh      /usr/local/bin/entrypoint.sh
+COPY update-inplace.sh  /usr/local/bin/update-inplace.sh
+RUN chmod +x /usr/local/bin/*.sh
+
+# Healthcheck & port
+EXPOSE 22
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD bash -lc 'ss -lnt | grep -q ":22 " || exit 1'
+
+# ----- Build-time version stamp (what this image ships with) -----
+RUN mkdir -p /opt/debug && \
+    bash -lc '\
+      { \
+        echo "Fail2Ban: $(fail2ban-client -V 2>/dev/null | head -n1 | sed '\''s/[^0-9.]*\([0-9.]*\).*/\1/'\'')"; \
+        echo "OpenSSH client: $(ssh -V 2>&1 | sed -n '\''s/.*OpenSSH_\([^ ]*\).*/\1/p'\'')"; \
+        echo "OpenSSH server: $(dpkg-query -W -f='\''${Version}\n'\'' openssh-server 2>/dev/null)"; \
+        echo "OpenSSL providers:"; openssl list -providers 2>/dev/null | sed "s/^/  /"; \
+        echo "whois: $(dpkg-query -W -f='\''${Version}\n'\'' whois 2>/dev/null)"; \
+        echo "glibc: $(ldd --version 2>/dev/null | head -n1 | awk '\''{print $NF}'\'')"; \
+        date -u +"Built at: %Y-%m-%dT%H:%M:%SZ"; \
+      } > /opt/debug/build-versions.txt'
+
+# Persist /config by default
+VOLUME ["/config"]
+
+# Tini as PID 1 + entrypoint
+ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]
 
