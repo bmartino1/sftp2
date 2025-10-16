@@ -18,25 +18,27 @@ Docker Hub: [https://hub.docker.com/r/bmmbmm01/sftp2](https://hub.docker.com/r/b
 * Fail2ban
 * Optional config volume can be mounted for custom ssh and fail2ban configuration and easily viewing fail2ban log
 
-# Environment variables
+## Environment variables
 
 | Name | Default | Description |
 |---|---|---|
 | `TZ` | (unset) | Container timezone, e.g. `America/Chicago`. |
 | `AUTO_UPDATE` | `none` | Update policy: `none`, `suite`, `custom`. |
 | `DEFAULT_ADMIN` | `true` | On first boot, seed `/config/sshd/users.conf`. |
-| `ADMIN_USER` | `admin` | Username for seeded admin (if `DEFAULT_ADMIN=true`). |
-| `ADMIN_PASS` | `password` | Password for seeded admin (***change this***). |
-| `PASSWORD_AUTH` | (unset) | Force OpenSSH password auth policy (yes/no). |
-| `ALLOW_USERS` | (unset) | Restrict login to listed users. |
-| `F2B_CONFIG_MODE` | `symlink` | Handle `/etc/fail2ban` configs (`symlink`, `overlay`, `noclobber`, `replace`). |
-| `DISABLE_IMKLOG` | `true` | Disable rsyslog imklog. |
-| `MODE` | `start` | `start` = normal boot; `seed` = config/update then exit. |
-| `SFTP_USERS` | (unset) | Inline user specs: `user:pass[:e][:uid][:gid][:dirs]`. |
-| `TAIL_LOGS` | `true` | Mirror selected logs to docker logs. |
-| `LOG_STREAMS` | `auth,fail2ban` | Comma-separated: `auth`, `fail2ban`, `whois`. |
-| `DEBUG_TESTING` | `false` | Run Fail2Ban dry-run + sshd config check (output to `/config/debug/`). |
-| `MAIL_SERVER` | `false` | Allow mail actions (remove `zz-nomail.local`). |
+| `ADMIN_USER` | `admin` | Username for seeded admin (used if `DEFAULT_ADMIN=true`). |
+| `ADMIN_PASS` | `password` | Password for seeded admin (**change this**). |
+| `PASSWORD_AUTH` | (unset) | Force OpenSSH password auth policy: `yes`/`no`. |
+| `ALLOW_USERS` | (unset) | Space-separated allowlist of SSH users (e.g. `admin alice`). |
+| `F2B_CONFIG_MODE` | `symlink` | Populate `/etc/fail2ban` from `/config/fail2ban`: `symlink` \| `overlay` \| `noclobber` \| `replace`. |
+| `DISABLE_IMKLOG` | `true` | Disable rsyslog `imklog` module (avoids `/proc/kmsg` noise in containers). |
+| `MODE` | `start` | `start` = normal boot; `seed` = prepare configs then exit. |
+| `SFTP_USERS` | (unset) | Inline user specs: `user:pass[:e][:uid][:gid][:dir1,dir2,...]` (appended to `/config/sshd/users.conf`). |
+| `TAIL_LOGS` | `true` | Mirror selected logs to `docker logs` (files are always written to `/config/log/…`). |
+| `LOG_STREAMS` | `auth,fail2ban` | Comma-separated selection for `TAIL_LOGS`: any of `auth`, `fail2ban`, `whois`. |
+| `DEBUG_TESTING` | `false` | When true, runs fail2ban dry-run and dumps effective sshd config to `/config/debug/`. |
+| `MAIL_SERVER` | `false` | When true, **keeps** Fail2Ban mail actions; otherwise writes `zz-nomail.local` to disable mail. |
+| `CLEAR_LOGS` | `false` | When true, archives previous run logs to `/config/log/archive/<name>.<UTC-timestamp>.log` and truncates current logs on boot. |
+
 
 **Notes**
 - Persistent logs always in `/config/log/`.
