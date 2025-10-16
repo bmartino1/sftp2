@@ -1,23 +1,25 @@
-9/9/25
+10/16/25
 
 Base docker image:
-Debian 12 -slim image
+Debian 13 -slim image
+Code Name Trixie
 
 log durring docker build:
-Fail2Ban: 1.0.2
-OpenSSH client: 9.2p1
-OpenSSH server: 1:9.2p1-2+deb12u7
-whois: 5.5.17
-glibc: 2.36
-Built at: 2025-09-10T03:22:41Z
+sftp-fail2ban  | [info]   Fail2Ban: 1.1.0
+sftp-fail2ban  | [info]   OpenSSH client: 10.0p2
+sftp-fail2ban  | [info]   OpenSSH server: 1:10.0p1-7
+sftp-fail2ban  | [info]   rsyslog: 8.2504.0-1
+sftp-fail2ban  | [info]   whois: 5.6.3
+sftp-fail2ban  | [info]   glibc: 2.41
+sftp-fail2ban  | [info]   Built at: 2025-10-16T17:44:57Z
+
 
 Docker Run:
-Reading state information...
-openssh-server is already the newest version (1:9.2p1-2+deb12u7).
-openssh-client is already the newest version (1:9.2p1-2+deb12u7).
-openssh-sftp-server is already the newest version (1:9.2p1-2+deb12u7).
-fail2ban is already the newest version (1.0.2-2).
-whois is already the newest version (5.5.17).
+sftp-fail2ban  | [info] Application versions at container start:
+sftp-fail2ban  | [info]   Fail2Ban:       1.1.0
+sftp-fail2ban  | [info]   OpenSSH client: 10.0p2
+sftp-fail2ban  | [info]   OpenSSH server: 1:10.0p1-7
+sftp-fail2ban  | [info]   whois:          5.6.3
+sftp-fail2ban  | [info]   glibc:          2.41
 
-debian 13 openssh 10 and openssl fips nist compliant test image: bmmbmm01/sftp2:13-fips
-*Edits to entry point for fips compliant ssh keys.
+debian 13 openssh 10 docker image: bmmbmm01/sftp2
