@@ -82,6 +82,7 @@ RUN set -eux; \
 # Entrypoint & updater
 COPY entrypoint.sh      /usr/local/bin/entrypoint.sh
 COPY update-inplace.sh  /usr/local/bin/update-inplace.sh
+COPY clear-log.sh  /usr/local/bin/clear-log.sh
 RUN chmod +x /usr/local/bin/*.sh
 
 # Healthcheck & port
