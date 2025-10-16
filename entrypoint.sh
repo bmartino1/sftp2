@@ -93,7 +93,7 @@ fi
 # --- Permissions (conservative) ---
 log "Setting ownership and permissions on /config"
 chown -R root:root /config/fail2ban /config/sshd
-chmod -R 755 /config
+chmod -R 750 /config
 for f in /config/fail2ban/*.local /config/sshd/*.conf /config/sshd/users.conf; do
   [[ -e "$f" ]] && chmod 644 "$f"
 done
@@ -181,7 +181,8 @@ if ! command -v iptables >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
   if [[ ! -f /config/fail2ban/jail.d/99-banaction.local ]]; then
     cat >/config/fail2ban/jail.d/99-banaction.local <<'EOF'
 [DEFAULT]
-banaction = nftables-multiport
+banaction          = nftables-multiport
+banaction_allports = nftables-allports
 EOF
     log "Selected nftables-multiport (iptables not found)"
   fi
@@ -250,7 +251,7 @@ ensure_log /config/log/whois.log
 
 # ===== perms =====
 chown -R root:root /config/sshd /config/fail2ban || true
-chmod 0755 /config /config/sshd /config/fail2ban || true
+chmod 0750 /config /config/sshd /config/fail2ban || true
 find /config -type f \( -name "*.conf" -o -name "*.local" \) -exec chmod 0644 {} \; || true
 find /config/sshd/keys -type f -name "*_key" -exec chmod 0600 {} \; 2>/dev/null || true
 chmod 0600 /etc/ssh/sshd_config || true
@@ -403,9 +404,13 @@ fi
 rm -f /var/run/fail2ban/fail2ban.sock /var/run/sshd.pid || true
 # Do NOT truncate logs here.
 
-# ===== optional preflight =====
-if command -v fail2ban-client >/dev/null 2>&1; then
-  fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
+# ===== optional preflight (DEBUG_TESTING) =====
+if [[ "${DEBUG_TESTING:-false}" =~ ^([Tt]rue|[Yy]es|1|on|ON)$ ]]; then
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    fail2ban-client -d > /config/debug/fail2ban-dryrun.log 2>&1 || true
+  fi
+  # Extra verbose sshd config dump
+  sshd -T -f /etc/ssh/sshd_config > /config/debug/sshd-effective.conf 2>/dev/null || true
 fi
 
 # ===== normalize sshd logging lines =====
@@ -442,9 +447,44 @@ if [[ "${MODE:-start}" == "seed" ]]; then
   exit 0
 fi
 
+# ===== optional: CLEAR_LOGS (boolean) =====
+# Usage: run container with -e CLEAR_LOGS=true|1|yes to rotate previous run logs
+# If /usr/local/bin/clear-log.sh exists and is executable, it will be used.
+# Otherwise we perform a simple rotate-to-archive + truncate for known logs.
+CLEAR_LOGS_NORMALIZED="${CLEAR_LOGS:-false}"
+case "${CLEAR_LOGS_NORMALIZED,,}" in
+  1|true|yes|on)
+    log "CLEAR_LOGS requested — preparing archive and clearing prior run logs"
+    if [[ -x /usr/local/bin/clear-log.sh ]]; then
+      /usr/local/bin/clear-log.sh || warn "clear-log.sh returned non-zero"
+    else
+      ts="$(date -u +%Y%m%dT%H%M%SZ)"
+      arch_dir="/config/log/archive"
+      mkdir -p "$arch_dir"
+      rotate_and_truncate() {
+        local f="$1" base
+        [[ -e "$f" ]] || return 0
+        base="$(basename "$f")"
+        if [[ -s "$f" ]]; then
+          mv -f "$f" "$arch_dir/${base%.log}.$ts.log" 2>/dev/null || cp -f "$f" "$arch_dir/${base%.log}.$ts.log" && : > "$f"
+        else
+          : > "$f"
+        fi
+        chmod 0644 "$f" || true
+      }
+      rotate_and_truncate "/config/log/auth.log"
+      rotate_and_truncate "/config/log/fail2ban.log"
+      rotate_and_truncate "/config/log/whois.log"
+      log "Previous logs archived to $arch_dir (timestamp $ts), current logs truncated"
+    fi
+    ;;
+  *) : ;; # no-op
+esac
+
 # ===== start daemons =====
 # Ensure rsyslog routes AUTH/AUTHPRIV to persisted auth log
-printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
+printf 'auth,authpriv.*	/config/log/auth.log
+' > /etc/rsyslog.d/00-auth.conf
 
 if command -v rsyslogd >/dev/null 2>&1; then
   log "Starting rsyslogd…"
@@ -468,15 +508,22 @@ else
   warn "rsyslogd not installed"
 fi
 
-
 # Make sure Debian's maily default can't sneak back in:
-# Provide a last-word override file that disables mail macros.
+# Provide a last-word override file that disables mail macros unless MAIL_SERVER=true
 mkdir -p /etc/fail2ban/jail.d
-cat >/etc/fail2ban/jail.d/zz-nomail.local <<'EOF'
+case "${MAIL_SERVER:-false}" in
+  1|true|yes|on|TRUE|YES|ON)
+    log "MAIL_SERVER enabled — leaving mail actions intact"
+    ;;
+  *)
+    cat >/etc/fail2ban/jail.d/zz-nomail.local <<'EOF'
 [DEFAULT]
 action_mw  = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
 action_mwl = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="tcp"]
 EOF
+    ;;
+
+esac
 
 if command -v fail2ban-client >/dev/null 2>&1; then
   log "Starting fail2ban via client…"
@@ -491,8 +538,21 @@ fi
 # ===== mirror key logs to Docker stdout (toggle with TAIL_LOGS=false) =====
 case "${TAIL_LOGS:-true}" in
   1|true|yes|on|TRUE|YES|ON)
-    ( tail -n+1 -q -F /config/log/auth.log /config/log/fail2ban.log /config/log/whois.log 2>/dev/null & )
+    # Build the list from LOG_STREAMS (default: auth,fail2ban)
+    IFS=',' read -r -a _streams <<< "${LOG_STREAMS:-auth,fail2ban}"
+    files=()
+    for s in "${_streams[@]}"; do
+      case "${s// /}" in
+        auth)     files+=("/config/log/auth.log") ;;
+        fail2ban) files+=("/config/log/fail2ban.log") ;;
+        whois)    files+=("/config/log/whois.log") ;;
+      esac
+    done
+    # Fallback to auth if nothing matched
+    [[ ${#files[@]} -gt 0 ]] || files+=("/config/log/auth.log")
+    ( tail -n+1 -q -F "${files[@]}" 2>/dev/null & )
     ;;
+  *) : ;;
 esac
 
 # ===== final: start sshd in foreground (NO -e; logs → syslog AUTHPRIV) =====
