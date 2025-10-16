@@ -17,6 +17,7 @@ services:
       #How /etc/fail2ban is populated from /config/fail2ban: symlink (source of truth = /config), overlay (defaults + then /config over), noclobber (defaults + non-clobber copy from /config), replace (use /config only).
 
       # Docker log mirroring
+      - CLEAR_LOGS=true  #When true, archives previous run logs to `/config/log/archive/<name>.<UTC-timestamp>.log` and truncates current logs on boot.
       - TAIL_LOGS=true              # mirror selected logs to `docker logs` to turn off docker log to sdtout. (logs will still ppopulate in log folder
       - LOG_STREAMS=auth,fail2ban   # valid: auth,fail2ban,whois (must be comma seperated list tels the docker sdtou logs which log file to view in docker log)
       #End users are now responsible for log rotation and monitoring! old system erased logs at boot now its end users.
