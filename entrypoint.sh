@@ -448,10 +448,26 @@ printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
 
 if command -v rsyslogd >/dev/null 2>&1; then
   log "Starting rsyslogd…"
-  rsyslogd || warn "rsyslogd failed to start"
+  # Start and then poll instead of trusting exit code
+  rsyslogd || true
+
+  # Poll up to ~10s for the child to appear
+  for i in {1..20}; do
+    if pgrep -x rsyslogd >/dev/null; then
+      log "rsyslogd is running (pid(s): $(pgrep -x rsyslogd | tr '\n' ' '))"
+      break
+    fi
+    sleep 0.5
+  done
+
+  if ! pgrep -x rsyslogd >/dev/null; then
+    warn "rsyslogd not detected after start; validating config (-N1)…"
+    rsyslogd -N1 || true
+  fi
 else
   warn "rsyslogd not installed"
 fi
+
 
 # Make sure Debian's maily default can't sneak back in:
 # Provide a last-word override file that disables mail macros.
