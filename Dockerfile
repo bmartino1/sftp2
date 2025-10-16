@@ -1,5 +1,5 @@
-# ---- Dockerfile (Debian 12 slim, pre-make + version stamp) ----
-FROM debian:12-slim
+# ---- Dockerfile (Debian 13 slim, pre-make + version stamp) ----
+FROM debian:trixie-slim
 
 LABEL maintainer="bmartino1" \
       org.opencontainers.image.title="sftp-fail2ban" \
@@ -28,7 +28,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       openssh-server openssh-client openssh-sftp-server \
       fail2ban rsyslog \
-      whois iptables \
+      whois iptables nftables \
       tzdata ca-certificates curl bash tini iproute2 procps \
       init-system-helpers net-tools \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -54,6 +54,15 @@ RUN set -eux; \
 # Ensure auth logs land in /config/log/auth.log (persisted)
 RUN mkdir -p /config/log && \
     printf 'auth,authpriv.*\t/config/log/auth.log\n' > /etc/rsyslog.d/00-auth.conf
+
+# --- Build-time rsyslog tweak + validation log ---
+# Disable imklog (no /proc/kmsg in containers) and validate the rsyslog config now.
+RUN set -eux; \
+    if grep -q 'module(load="imklog"' /etc/rsyslog.conf 2>/dev/null; then \
+      sed -i -E 's/^\s*module\(load="imklog".*\)/# disabled in container: &/' /etc/rsyslog.conf || true; \
+    fi; \
+    mkdir -p /opt/debug; \
+    rsyslogd -N1 > /opt/debug/rsyslog-buildcheck.txt 2>&1 || true
 
 # ----- Defaults (seeded at runtime if user doesn't provide /config files) -----
 COPY defaults/sshd/sshd_config                     /defaults/sshd/sshd_config
@@ -87,6 +96,7 @@ RUN mkdir -p /opt/debug && \
         echo "Fail2Ban: $(fail2ban-client -V 2>/dev/null | head -n1 | sed '\''s/[^0-9.]*\([0-9.]*\).*/\1/'\'')"; \
         echo "OpenSSH client: $(ssh -V 2>&1 | sed -n '\''s/.*OpenSSH_\([^ ]*\).*/\1/p'\'')"; \
         echo "OpenSSH server: $(dpkg-query -W -f='\''${Version}\n'\'' openssh-server 2>/dev/null)"; \
+        echo "rsyslog: $(dpkg-query -W -f='\''${Version}\n'\'' rsyslog 2>/dev/null)"; \
         echo "whois: $(dpkg-query -W -f='\''${Version}\n'\'' whois 2>/dev/null)"; \
         echo "glibc: $(ldd --version 2>/dev/null | head -n1 | awk '\''{print $NF}'\'')"; \
         date -u +"Built at: %Y-%m-%dT%H:%M:%SZ"; \
